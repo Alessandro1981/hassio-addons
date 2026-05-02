@@ -30,11 +30,12 @@ Features:
 - ETF price monitoring
 - Configurable polling interval
 - Configurable percentage threshold
+- Daily opening price and latest price dashboard
 - Home Assistant Companion notifications
 - Alpha Vantage and Finnhub API key configuration
 
-Source repository:
-https://github.com/Alessandro1981/etf-checker
+Source repository / Home Assistant catalog:
+https://github.com/Alessandro1981/hassio-addons/tree/main/etf_checker
 
 ---
 
