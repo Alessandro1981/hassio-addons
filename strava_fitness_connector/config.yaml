@@ -1,0 +1,33 @@
+name: Strava Fitness Connector
+version: "1.0.0"
+slug: strava_fitness_connector
+description: Personal Strava fitness data connector with sync, stats and insights
+url: "https://github.com/Alessandro1981/strava-fitness-connector"
+arch:
+  - aarch64
+  - amd64
+  - armv7
+startup: services
+boot: auto
+init: false
+panel_icon: mdi:run
+panel_title: Strava Fitness Connector
+ports:
+  8099/tcp: 8099
+ports_description:
+  8099/tcp: Strava Fitness Connector web interface
+webui: "http://[HOST]:[PORT:8099]/"
+options:
+  app_base_url: ""
+  strava_client_id: ""
+  strava_client_secret: ""
+  strava_scopes: "read,activity:read_all,profile:read_all"
+  sync_enabled: true
+  sync_interval_seconds: 3600
+schema:
+  app_base_url: str
+  strava_client_id: str
+  strava_client_secret: password
+  strava_scopes: str
+  sync_enabled: bool
+  sync_interval_seconds: int
