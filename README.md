@@ -4,9 +4,11 @@ A curated collection of personal Home Assistant add-ons for fitness tracking, fi
 
 ## Available add-ons
 
-### Strava Fitness MCP
+This repository currently includes 2 add-ons:
 
-Personal Strava fitness data layer with sync, stats and insights.
+### Strava Fitness Connector
+
+Personal Strava fitness data connector with sync, stats and insights.
 
 Features:
 - Strava OAuth authentication
@@ -16,8 +18,32 @@ Features:
 - Rule-based insights
 
 Source repository:
-https://github.com/Alessandro1981/strava-fitness-mcp
+https://github.com/Alessandro1981/strava-fitness-connector
 
 ---
 
-More add-ons coming soon.
+### ETF Checker
+
+Personal ETF monitoring add-on that checks configured ETF prices and sends Home Assistant Companion notifications when a percentage threshold is exceeded.
+
+Features:
+- ETF price monitoring
+- Configurable polling interval
+- Configurable percentage threshold
+- Home Assistant Companion notifications
+- Alpha Vantage and Finnhub API key configuration
+
+Source repository:
+https://github.com/Alessandro1981/etf-checker
+
+---
+
+## Installation
+
+In Home Assistant, add this repository URL to the Add-on Store repositories:
+
+```text
+https://github.com/Alessandro1981/hassio-addons
+```
+
+Then reload the Add-on Store and install the add-on you want to use.
