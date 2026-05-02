@@ -2,101 +2,119 @@
 <html lang="it">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>ETF Checker</title>
-    <link rel="stylesheet" href="{{ ingress_root }}/assets/style.css" />
+    <link rel="stylesheet" href="assets/style.css?v=0.4.12" />
   </head>
   <body data-ingress-root="{{ ingress_root }}">
     <main class="container">
-      <header class="header">
-        <h1>ETF Checker</h1>
-        <p>
-          Inserisci la lista di ETF (separati da virgola) e la soglia percentuale comune.
-          Quando la variazione rispetto al baseline supera la soglia, inviamo una notifica.
-        </p>
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Home Assistant add-on</p>
+          <h1>ETF Checker</h1>
+          <p class="subtitle">Monitora ETF, prezzo di apertura, ultimo prezzo letto e alert sopra soglia.</p>
+        </div>
       </header>
 
-      <section class="card">
-        <h2>Configurazione</h2>
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Configurazione</h2>
+          <span class="pill">Polling {{ poll_interval }}s</span>
+        </div>
         <form id="config-form" class="form">
-          <label for="symbols">ETF (es. SWDA.MI, CSPX.MI)</label>
-          <textarea id="symbols" name="symbols" rows="3" placeholder="SWDA.MI, CSPX.MI">{{ symbols }}</textarea>
+          <div class="field field-wide">
+            <label for="symbols">Lista ETF</label>
+            <textarea id="symbols" name="symbols" rows="4" placeholder="COMO.PA, L100.PA, 500.PA">{{ symbols }}</textarea>
+          </div>
 
-          <label for="threshold">Soglia percentuale</label>
-          <input
-            id="threshold"
-            name="threshold"
-            type="number"
-            min="0.1"
-            step="0.1"
-            value="{{ threshold }}"
-            required
-          />
+          <div class="field-row">
+            <div class="field">
+              <label for="threshold">Soglia %</label>
+              <input
+                id="threshold"
+                name="threshold"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value="{{ threshold }}"
+                required
+              />
+            </div>
 
-          <label for="market-open-retry">Ritardo dopo apertura borsa (secondi)</label>
-          <input
-            id="market-open-retry"
-            name="market-open-retry"
-            type="number"
-            min="0"
-            step="10"
-            value="{{ market_open_retry_seconds }}"
-            required
-          />
+            <div class="field">
+              <label for="market-open-retry">Ritardo apertura</label>
+              <input
+                id="market-open-retry"
+                name="market-open-retry"
+                type="number"
+                min="0"
+                step="10"
+                value="{{ market_open_retry_seconds }}"
+                required
+              />
+            </div>
+          </div>
 
           <div class="actions">
-            <button type="submit">Salva configurazione</button>
-            <button type="button" id="poll-btn" class="secondary">Esegui controllo ora</button>
+            <button type="submit" class="primary">Salva</button>
+            <button type="button" id="poll-btn" class="secondary">Controlla ora</button>
           </div>
         </form>
-        <p class="hint">
-          Intervallo di polling: <strong>{{ poll_interval }}</strong> secondi. Servizio notify:
-          <strong>{{ notify_service }}</strong>
-        </p>
+        <p class="hint">Notifiche: <strong>{{ notify_service }}</strong></p>
         <p id="status" class="status" role="status" aria-live="polite"></p>
       </section>
 
-      <section class="card">
-        <h2>Prezzi correnti</h2>
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Prezzi correnti</h2>
+          <span class="pill">{{ price_rows|length }} ETF</span>
+        </div>
         {% if price_rows %}
-        <table class="baseline-list">
-          <thead>
-            <tr>
-              <th>ETF</th>
-              <th>Apertura</th>
-              <th>Ultimo prezzo</th>
-              <th>Timestamp</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in price_rows %}
-            <tr>
-              <td><strong>{{ row.symbol }}</strong></td>
-              <td>{{ "%.2f"|format(row.daily_open_price) if row.daily_open_price is not none else "N/A" }}</td>
-              <td>{{ "%.2f"|format(row.latest_price) if row.latest_price is not none else "N/A" }}</td>
-              <td>{{ row.latest_read_at if row.latest_read_at else "N/A" }}</td>
-            </tr>
-            {% endfor %}
-          </tbody>
-        </table>
+        <div class="price-grid">
+          {% for row in price_rows %}
+          <article class="price-card">
+            <div class="price-card-header">
+              <strong>{{ row.symbol }}</strong>
+              <span class="status-dot {{ 'active' if row.latest_price is not none else '' }}"></span>
+            </div>
+            <dl>
+              <div>
+                <dt>Apertura</dt>
+                <dd>{{ "%.2f"|format(row.daily_open_price) if row.daily_open_price is not none else "N/A" }}</dd>
+              </div>
+              <div>
+                <dt>Ultimo</dt>
+                <dd>{{ "%.2f"|format(row.latest_price) if row.latest_price is not none else "N/A" }}</dd>
+              </div>
+              <div class="full">
+                <dt>Letto alle</dt>
+                <dd>{{ row.latest_read_at if row.latest_read_at else "N/A" }}</dd>
+              </div>
+            </dl>
+          </article>
+          {% endfor %}
+        </div>
         {% else %}
-        <p>Nessun dato disponibile. Esegui un polling manuale.</p>
+        <p class="empty">Nessun dato disponibile. Esegui un polling manuale.</p>
         {% endif %}
       </section>
 
-      <section class="card">
-        <h2>Baseline correnti</h2>
+      <section class="panel">
+        <div class="section-heading">
+          <h2>Baseline</h2>
+          {% if last_baseline_update %}<span class="pill">Aggiornata</span>{% endif %}
+        </div>
         {% if baselines %}
-        <ul class="baseline-list">
+        <div class="baseline-grid">
           {% for symbol, value in baselines.items() %}
-          <li><strong>{{ symbol }}</strong>: {{ "%.2f"|format(value) }}</li>
+          <div class="baseline-item"><span>{{ symbol }}</span><strong>{{ "%.2f"|format(value) }}</strong></div>
           {% endfor %}
-        </ul>
+        </div>
         {% if last_baseline_update %}
-        <p class="baseline-updated">Ultimo aggiornamento baseline (CET): {{ last_baseline_update }}</p>
+        <p class="baseline-updated">Ultimo aggiornamento baseline: {{ last_baseline_update }}</p>
         {% endif %}
         {% else %}
-        <p>Nessun baseline salvato: verrà creato al prossimo polling con prezzi disponibili.</p>
+        <p class="empty">Nessun baseline salvato: verrà creato al prossimo polling con prezzi disponibili.</p>
         {% endif %}
       </section>
     </main>
