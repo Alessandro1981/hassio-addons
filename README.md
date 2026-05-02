@@ -18,7 +18,7 @@ Features:
 - Rule-based insights
 
 Source repository:
-https://github.com/Alessandro1981/strava-fitness-connector
+https://github.com/Alessandro1981/hassio-addons/tree/main/strava-fitness-connector
 
 ---
 
