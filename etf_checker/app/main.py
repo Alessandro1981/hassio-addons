@@ -9,7 +9,7 @@ import sys
 from datetime import datetime
 from typing import Any
 
-from flask import Flask, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for
 
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -147,6 +147,11 @@ def index() -> str:
         price_rows=price_rows,
         last_baseline_update=_format_baseline_update(state.last_baseline_update),
     )
+
+
+@APP.get("/assets/style.css")
+def stylesheet() -> Any:
+    return send_from_directory(Path(__file__).parent / "static", "style.css")
 
 
 @APP.get("/api/config")
