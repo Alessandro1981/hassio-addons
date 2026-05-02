@@ -22,7 +22,7 @@ def load_hassio_options() -> dict[str, Any]:
 
 
 class Settings(BaseSettings):
-    app_name: str = "Strava Fitness MCP"
+    app_name: str = "Strava Fitness Connector"
     app_base_url: str = "http://localhost:8000"
     database_url: str = "sqlite:///./data/strava_phase1.db"
     strava_client_id: str = ""
