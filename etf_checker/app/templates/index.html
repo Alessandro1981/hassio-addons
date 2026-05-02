@@ -57,6 +57,34 @@
       </section>
 
       <section class="card">
+        <h2>Prezzi correnti</h2>
+        {% if price_rows %}
+        <table class="baseline-list">
+          <thead>
+            <tr>
+              <th>ETF</th>
+              <th>Apertura</th>
+              <th>Ultimo prezzo</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in price_rows %}
+            <tr>
+              <td><strong>{{ row.symbol }}</strong></td>
+              <td>{{ "%.2f"|format(row.daily_open_price) if row.daily_open_price is not none else "N/A" }}</td>
+              <td>{{ "%.2f"|format(row.latest_price) if row.latest_price is not none else "N/A" }}</td>
+              <td>{{ row.latest_read_at if row.latest_read_at else "N/A" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <p>Nessun dato disponibile. Esegui un polling manuale.</p>
+        {% endif %}
+      </section>
+
+      <section class="card">
         <h2>Baseline correnti</h2>
         {% if baselines %}
         <ul class="baseline-list">

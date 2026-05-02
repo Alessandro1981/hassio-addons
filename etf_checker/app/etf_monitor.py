@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from .config import EffectiveConfig
 from .ha_client import HomeAssistantClient
-from .storage import MonitorState, load_state, save_state
+from .storage import DailyOpenPrice, MonitorState, PriceSnapshot, load_state, save_state
 
 LOGGER = logging.getLogger(__name__)
 
@@ -48,9 +48,10 @@ class MarketHours:
 
 
 _MARKET_HOURS_BY_SUFFIX: dict[str, MarketHours] = {
-    ".PA": MarketHours(ZoneInfo("Europe/Paris"), dt_time(9, 0), dt_time(17, 30)),
-    ".AS": MarketHours(ZoneInfo("Europe/Amsterdam"), dt_time(9, 0), dt_time(17, 30)),
-    ".DE": MarketHours(ZoneInfo("Europe/Berlin"), dt_time(9, 0), dt_time(17, 30)),
+    ".PA": MarketHours(ZoneInfo("Europe/Paris"), dt_time(9, 15), dt_time(17, 30)),
+    ".AS": MarketHours(ZoneInfo("Europe/Amsterdam"), dt_time(9, 15), dt_time(17, 30)),
+    ".DE": MarketHours(ZoneInfo("Europe/Berlin"), dt_time(9, 15), dt_time(17, 30)),
+    ".DU": MarketHours(ZoneInfo("Europe/Berlin"), dt_time(9, 15), dt_time(17, 30)),
 }
 
 
@@ -545,7 +546,7 @@ def default_price_provider(symbols: Iterable[str]) -> dict[str, float]:
         prices.update(_fetch_prices_stooq(missing))
         missing = [symbol for symbol in symbol_list if symbol not in prices]
     if missing:
-        suffixes = [".MI", ".DE", ".PA", ".L"]
+        suffixes = [".MI", ".DE", ".DU", ".PA", ".L"]
         LOGGER.warning(
             "Attempting suffix fallback for symbols: %s (suffixes: %s)",
             ", ".join(missing),
@@ -593,6 +594,8 @@ class EtfMonitor:
             return MonitorState(
                 baselines=dict(self._state.baselines),
                 last_baseline_update=self._state.last_baseline_update,
+                last_prices=dict(self._state.last_prices),
+                daily_open_prices=dict(self._state.daily_open_prices),
             )
 
     def update_config(self, config: EffectiveConfig) -> None:
@@ -648,21 +651,38 @@ class EtfMonitor:
             return None
         alerts: list[tuple[str, float, float, float]] = []
         baseline_updated = False
+        state_updated = False
+        now_iso = now.isoformat(timespec="seconds")
+        today = now.date().isoformat()
         with self._lock:
             for symbol, current_price in prices.items():
-                baseline = self._state.baselines.get(symbol)
+                normalized_symbol = symbol.upper()
+                self._state.last_prices[normalized_symbol] = PriceSnapshot(
+                    price=current_price,
+                    read_at=now_iso,
+                )
+                open_snapshot = self._state.daily_open_prices.get(normalized_symbol)
+                if open_snapshot is None or open_snapshot.date != today:
+                    self._state.daily_open_prices[normalized_symbol] = DailyOpenPrice(
+                        price=current_price,
+                        date=today,
+                        read_at=now_iso,
+                    )
+                state_updated = True
+                baseline = self._state.baselines.get(normalized_symbol)
                 if baseline is None:
-                    self._state.baselines[symbol] = current_price
+                    self._state.baselines[normalized_symbol] = current_price
                     baseline_updated = True
                     continue
                 change = percent_change(baseline, current_price)
                 if abs(change) >= threshold:
-                    alerts.append((symbol, baseline, current_price, change))
-                    self._state.baselines[symbol] = current_price
+                    alerts.append((normalized_symbol, baseline, current_price, change))
+                    self._state.baselines[normalized_symbol] = current_price
                     baseline_updated = True
             if baseline_updated:
-                self._state.last_baseline_update = now.isoformat(timespec="seconds")
-            save_state(self._state)
+                self._state.last_baseline_update = now_iso
+            if baseline_updated or state_updated:
+                save_state(self._state)
         for symbol, baseline, current_price, change in alerts:
             self._notify(symbol, baseline, current_price, change, threshold)
         return None
@@ -681,7 +701,7 @@ class EtfMonitor:
             self._ha_client.send_notification(title=title, message=message)
             LOGGER.info("Alert inviato per %s: %s", symbol, message)
         except Exception as err:  # noqa: BLE001
-            LOGGER.exception("Invio alert fallito per %s: %s", symbol, err)
+            LOGGER.exception("Invio alert fallito per %s: %s", err)
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
