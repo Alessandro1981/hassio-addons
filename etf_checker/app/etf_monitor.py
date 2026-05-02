@@ -1,0 +1,692 @@
+"""ETF monitoring logic."""
+
+from __future__ import annotations
+
+import csv
+import io
+import logging
+import threading
+import time
+from dataclasses import dataclass
+from datetime import datetime, time as dt_time, timedelta
+from email.utils import parsedate_to_datetime
+from typing import Callable, Iterable
+from zoneinfo import ZoneInfo
+
+from .config import EffectiveConfig
+from .ha_client import HomeAssistantClient
+from .storage import MonitorState, load_state, save_state
+
+LOGGER = logging.getLogger(__name__)
+
+PriceProvider = Callable[[Iterable[str]], dict[str, float]]
+Notifier = Callable[[str, str], None]
+_YAHOO_CRUMB_TTL_SECONDS = 1800
+_ALPHA_VANTAGE_MIN_DELAY_SECONDS = 15.0
+_YAHOO_MIN_DELAY_SECONDS = 15.0
+_STOOQ_MIN_DELAY_SECONDS = 15.0
+_FINNHUB_MIN_DELAY_SECONDS = 15.0
+_yahoo_session: "requests.Session | None" = None
+_yahoo_crumb: str | None = None
+_yahoo_crumb_timestamp: float | None = None
+_yahoo_cooldown_until: float | None = None
+_yahoo_last_call: float | None = None
+_alpha_vantage_api_key: str | None = None
+_alpha_vantage_last_call: float | None = None
+_alpha_vantage_missing_key_logged = False
+_finnhub_api_key: str | None = None
+_finnhub_last_call: float | None = None
+_finnhub_missing_key_logged = False
+_stooq_last_call: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class MarketHours:
+    timezone: ZoneInfo
+    open_time: dt_time
+    close_time: dt_time
+
+
+_MARKET_HOURS_BY_SUFFIX: dict[str, MarketHours] = {
+    ".PA": MarketHours(ZoneInfo("Europe/Paris"), dt_time(9, 0), dt_time(17, 30)),
+    ".AS": MarketHours(ZoneInfo("Europe/Amsterdam"), dt_time(9, 0), dt_time(17, 30)),
+    ".DE": MarketHours(ZoneInfo("Europe/Berlin"), dt_time(9, 0), dt_time(17, 30)),
+}
+
+
+def _market_is_open(symbol: str, now: datetime) -> bool:
+    suffix = f".{symbol.rsplit('.', 1)[-1].upper()}" if "." in symbol else ""
+    market = _MARKET_HOURS_BY_SUFFIX.get(suffix)
+    if market is None:
+        return True
+    local_now = now.astimezone(market.timezone)
+    if local_now.weekday() >= 5:
+        return False
+    current_time = local_now.timetz().replace(tzinfo=None)
+    return market.open_time <= current_time < market.close_time
+
+
+def _partition_symbols_for_market_hours(
+    symbols: list[str], now: datetime
+) -> tuple[list[str], list[str]]:
+    open_symbols: list[str] = []
+    closed_symbols: list[str] = []
+    for symbol in symbols:
+        if _market_is_open(symbol, now):
+            open_symbols.append(symbol)
+        else:
+            closed_symbols.append(symbol)
+    if closed_symbols:
+        LOGGER.info(
+            "Skipping price fetch outside market hours for symbols: %s",
+            ", ".join(closed_symbols),
+        )
+    return open_symbols, closed_symbols
+
+
+def _next_market_open_delay(symbols: list[str], now: datetime, retry_offset_seconds: int) -> float | None:
+    if not symbols:
+        return None
+    delays: list[float] = []
+    for symbol in symbols:
+        suffix = f".{symbol.rsplit('.', 1)[-1].upper()}" if "." in symbol else ""
+        market = _MARKET_HOURS_BY_SUFFIX.get(suffix)
+        if market is None:
+            return None
+        local_now = now.astimezone(market.timezone)
+        local_time = local_now.timetz().replace(tzinfo=None)
+        if local_now.weekday() < 5 and local_time < market.open_time:
+            next_open_date = local_now.date()
+        else:
+            next_open_date = local_now.date() + timedelta(days=1)
+            while next_open_date.weekday() >= 5:
+                next_open_date += timedelta(days=1)
+        next_open_dt = datetime.combine(next_open_date, market.open_time, tzinfo=market.timezone)
+        delay_seconds = (next_open_dt - local_now).total_seconds() + retry_offset_seconds
+        delays.append(max(delay_seconds, 0.0))
+    if not delays:
+        return None
+    return min(delays)
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed is None:
+            return None
+        seconds = (parsed - parsed.now(parsed.tzinfo)).total_seconds()
+        return max(seconds, 0.0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _sleep_for_retry_after(retry_after: str | None, fallback_delay: float, context: str) -> None:
+    delay = _retry_after_seconds(retry_after)
+    if delay is None:
+        delay = fallback_delay
+    _set_yahoo_cooldown(delay)
+    LOGGER.warning("Yahoo Finance rate limited (%s). Retrying in %.1fs.", context, delay)
+    time.sleep(delay)
+
+
+def _set_yahoo_cooldown(delay: float) -> None:
+    global _yahoo_cooldown_until
+    _yahoo_cooldown_until = time.monotonic() + max(delay, 0.0)
+
+
+def _yahoo_cooldown_remaining() -> float:
+    if _yahoo_cooldown_until is None:
+        return 0.0
+    return max(_yahoo_cooldown_until - time.monotonic(), 0.0)
+
+
+def set_alpha_vantage_api_key(api_key: str) -> None:
+    global _alpha_vantage_api_key
+    _alpha_vantage_api_key = api_key.strip()
+
+
+def set_finnhub_api_key(api_key: str) -> None:
+    global _finnhub_api_key
+    _finnhub_api_key = api_key.strip()
+
+
+def _throttle_provider(last_call: float | None, min_delay: float) -> float:
+    now = time.monotonic()
+    if last_call is None:
+        return now
+    elapsed = now - last_call
+    if elapsed < min_delay:
+        time.sleep(min_delay - elapsed)
+    return time.monotonic()
+
+
+def _alpha_vantage_throttle() -> None:
+    global _alpha_vantage_last_call
+    _alpha_vantage_last_call = _throttle_provider(_alpha_vantage_last_call, _ALPHA_VANTAGE_MIN_DELAY_SECONDS)
+
+
+def _yahoo_throttle() -> None:
+    global _yahoo_last_call
+    _yahoo_last_call = _throttle_provider(_yahoo_last_call, _YAHOO_MIN_DELAY_SECONDS)
+
+
+def _stooq_throttle() -> None:
+    global _stooq_last_call
+    _stooq_last_call = _throttle_provider(_stooq_last_call, _STOOQ_MIN_DELAY_SECONDS)
+
+
+def _finnhub_throttle() -> None:
+    global _finnhub_last_call
+    _finnhub_last_call = _throttle_provider(_finnhub_last_call, _FINNHUB_MIN_DELAY_SECONDS)
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = parsedate_to_datetime(value)
+        if parsed is None:
+            return None
+        seconds = (parsed - parsed.now(parsed.tzinfo)).total_seconds()
+        return max(seconds, 0.0)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _sleep_for_retry_after(retry_after: str | None, fallback_delay: float, context: str) -> None:
+    delay = _retry_after_seconds(retry_after)
+    if delay is None:
+        delay = fallback_delay
+    LOGGER.warning("Yahoo Finance rate limited (%s). Retrying in %.1fs.", context, delay)
+    time.sleep(delay)
+
+
+def _fetch_prices_batch(symbols: list[str]) -> dict[str, float]:
+    cooldown = _yahoo_cooldown_remaining()
+    if cooldown > 0:
+        LOGGER.warning("Skipping Yahoo Finance (cooldown %.1fs remaining).", cooldown)
+        return {}
+    urls = [
+        "https://query2.finance.yahoo.com/v7/finance/quote",
+        "https://query1.finance.yahoo.com/v7/finance/quote",
+    ]
+    headers = {"User-Agent": "ETF-Checker/1.0", "Accept": "application/json"}
+    try:
+        import requests
+
+        params = {"symbols": ",".join(symbols)}
+        last_error: Exception | None = None
+        for url in urls:
+            delay = 2.0
+            for attempt in range(3):
+                _yahoo_throttle()
+                response = requests.get(url, params=params, headers=headers, timeout=15)
+                if response.status_code == 429 and attempt < 2:
+                    _sleep_for_retry_after(response.headers.get("Retry-After"), delay, "quote")
+                    delay *= 2
+                    continue
+                if response.status_code == 401:
+                    last_error = requests.HTTPError("401 Unauthorized")
+                    break
+                if response.status_code == 429:
+                    cooldown = _retry_after_seconds(response.headers.get("Retry-After")) or delay
+                    _set_yahoo_cooldown(cooldown)
+                response.raise_for_status()
+                last_error = None
+                break
+            if last_error is None:
+                break
+        if last_error is not None:
+            raise last_error
+    except ModuleNotFoundError:
+        LOGGER.warning("requests is not installed; cannot fetch prices.")
+        return {}
+    except requests.RequestException as err:
+        LOGGER.warning("Yahoo Finance request failed: %s", err)
+        return {}
+    payload = response.json()
+    results = payload.get("quoteResponse", {}).get("result", [])
+    prices: dict[str, float] = {}
+    for item in results:
+        symbol = str(item.get("symbol", "")).upper()
+        price = item.get("regularMarketPrice")
+        if symbol and price is not None:
+            try:
+                prices[symbol] = float(price)
+            except (TypeError, ValueError):
+                continue
+    return prices
+
+
+def _fetch_prices_yahoo_with_crumb(symbols: list[str]) -> dict[str, float]:
+    """Fallback provider using Yahoo Finance crumb/cookie flow."""
+    if not symbols:
+        return {}
+    cooldown = _yahoo_cooldown_remaining()
+    if cooldown > 0:
+        LOGGER.warning("Skipping Yahoo Finance crumb flow (cooldown %.1fs remaining).", cooldown)
+        return {}
+    headers = {"User-Agent": "ETF-Checker/1.0", "Accept": "application/json"}
+    url = "https://query1.finance.yahoo.com/v7/finance/quote"
+    url_no_crumb = "https://query2.finance.yahoo.com/v7/finance/quote"
+    prices: dict[str, float] = {}
+    try:
+        import requests
+
+        global _yahoo_session
+        global _yahoo_crumb
+        global _yahoo_crumb_timestamp
+        if _yahoo_session is None:
+            _yahoo_session = requests.Session()
+            _yahoo_session.get("https://fc.yahoo.com", headers=headers, timeout=10)
+        session = _yahoo_session
+        params = {"symbols": ",".join(symbols)}
+        response = None
+        delay = 2.0
+        for attempt in range(3):
+            _yahoo_throttle()
+            response = session.get(url_no_crumb, params=params, headers=headers, timeout=15)
+            if response.status_code == 429 and attempt < 2:
+                _sleep_for_retry_after(response.headers.get("Retry-After"), delay, "quote")
+                delay *= 2
+                continue
+            if response.status_code == 429:
+                cooldown = _retry_after_seconds(response.headers.get("Retry-After")) or delay
+                _set_yahoo_cooldown(cooldown)
+            break
+        if response is None:
+            return {}
+        if response.status_code in {401, 429}:
+            now = time.monotonic()
+            if (
+                _yahoo_crumb
+                and _yahoo_crumb_timestamp
+                and now - _yahoo_crumb_timestamp < _YAHOO_CRUMB_TTL_SECONDS
+            ):
+                crumb = _yahoo_crumb
+            else:
+                crumb = ""
+                delay = 2.0
+                for attempt in range(3):
+                    _yahoo_throttle()
+                    crumb_response = session.get(
+                        "https://query1.finance.yahoo.com/v1/test/getcrumb", headers=headers, timeout=10
+                    )
+                    if crumb_response.status_code == 429 and attempt < 2:
+                        _sleep_for_retry_after(crumb_response.headers.get("Retry-After"), delay, "crumb")
+                        delay *= 2
+                        continue
+                    if crumb_response.status_code == 429:
+                        cooldown = _retry_after_seconds(crumb_response.headers.get("Retry-After")) or delay
+                        _set_yahoo_cooldown(cooldown)
+                    crumb_response.raise_for_status()
+                    crumb = crumb_response.text.strip()
+                    break
+                if crumb:
+                    _yahoo_crumb = crumb
+                    _yahoo_crumb_timestamp = now
+            if not crumb:
+                return {}
+            params = {"symbols": ",".join(symbols), "crumb": crumb}
+            delay = 2.0
+            for attempt in range(3):
+                _yahoo_throttle()
+                response = session.get(url, params=params, headers=headers, timeout=15)
+                if response.status_code == 429 and attempt < 2:
+                    _sleep_for_retry_after(response.headers.get("Retry-After"), delay, "quote")
+                    delay *= 2
+                    continue
+                if response.status_code == 429:
+                    cooldown = _retry_after_seconds(response.headers.get("Retry-After")) or delay
+                    _set_yahoo_cooldown(cooldown)
+                break
+        response.raise_for_status()
+    except ModuleNotFoundError:
+        LOGGER.warning("requests is not installed; cannot fetch crumb prices.")
+        return {}
+    except requests.RequestException as err:
+        LOGGER.warning("Yahoo Finance crumb request failed: %s", err)
+        return {}
+    payload = response.json()
+    results = payload.get("quoteResponse", {}).get("result", [])
+    for item in results:
+        symbol = str(item.get("symbol", "")).upper()
+        price = item.get("regularMarketPrice")
+        if symbol and price is not None:
+            try:
+                prices[symbol] = float(price)
+            except (TypeError, ValueError):
+                continue
+    return prices
+
+
+def _fetch_prices_stooq(symbols: list[str]) -> dict[str, float]:
+    """Fallback provider using Stooq CSV endpoint."""
+    if not symbols:
+        return {}
+    headers = {"User-Agent": "ETF-Checker/1.0", "Accept": "text/csv"}
+    url = "https://stooq.com/q/l/"
+    prices: dict[str, float] = {}
+    try:
+        import requests
+
+        for symbol in symbols:
+            _stooq_throttle()
+            params = {"s": symbol.lower(), "f": "sd2t2ohlcv", "h": "", "e": "csv"}
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            response.raise_for_status()
+            reader = csv.DictReader(io.StringIO(response.text))
+            row = next(reader, None)
+            if not row:
+                continue
+            close_value = row.get("Close")
+            if close_value in (None, "", "N/A"):
+                continue
+            try:
+                prices[symbol.upper()] = float(close_value)
+            except (TypeError, ValueError):
+                continue
+    except ModuleNotFoundError:
+        LOGGER.warning("requests is not installed; cannot fetch fallback prices.")
+        return {}
+    except requests.RequestException as err:
+        LOGGER.warning("Stooq request failed: %s", err)
+        return {}
+    return prices
+
+
+def _fetch_prices_alpha_vantage(symbols: list[str], api_key: str | None) -> dict[str, float]:
+    """Primary provider using Alpha Vantage Global Quote API."""
+    if not symbols:
+        return {}
+    if not api_key:
+        global _alpha_vantage_missing_key_logged
+        if not _alpha_vantage_missing_key_logged:
+            LOGGER.warning("Alpha Vantage API key not configured; skipping Alpha Vantage provider.")
+            _alpha_vantage_missing_key_logged = True
+        return {}
+    url = "https://www.alphavantage.co/query"
+    headers = {"User-Agent": "ETF-Checker/1.0", "Accept": "application/json"}
+    prices: dict[str, float] = {}
+    try:
+        import requests
+
+        for symbol in symbols:
+            _alpha_vantage_throttle()
+            params = {"function": "GLOBAL_QUOTE", "symbol": symbol, "apikey": api_key}
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code == 429:
+                LOGGER.warning("Alpha Vantage rate limit hit (HTTP 429).")
+                break
+            response.raise_for_status()
+            payload = response.json()
+            if "Note" in payload:
+                LOGGER.warning("Alpha Vantage rate limit hit: %s", payload.get("Note"))
+                break
+            if "Error Message" in payload:
+                LOGGER.warning("Alpha Vantage error for %s: %s", symbol, payload.get("Error Message"))
+                continue
+            quote = payload.get("Global Quote", {})
+            price_value = quote.get("05. price")
+            if price_value in (None, "", "N/A"):
+                continue
+            try:
+                prices[str(quote.get("01. symbol", symbol)).upper()] = float(price_value)
+            except (TypeError, ValueError):
+                continue
+    except ModuleNotFoundError:
+        LOGGER.warning("requests is not installed; cannot fetch Alpha Vantage prices.")
+        return {}
+    except requests.RequestException as err:
+        LOGGER.warning("Alpha Vantage request failed: %s", err)
+        return {}
+    return prices
+
+
+def _fetch_prices_finnhub(symbols: list[str], api_key: str | None) -> dict[str, float]:
+    """Secondary provider using Finnhub quote API."""
+    if not symbols:
+        return {}
+    if not api_key:
+        global _finnhub_missing_key_logged
+        if not _finnhub_missing_key_logged:
+            LOGGER.warning("Finnhub API key not configured; skipping Finnhub provider.")
+            _finnhub_missing_key_logged = True
+        return {}
+    url = "https://finnhub.io/api/v1/quote"
+    headers = {"User-Agent": "ETF-Checker/1.0", "Accept": "application/json"}
+    prices: dict[str, float] = {}
+    try:
+        import requests
+
+        for symbol in symbols:
+            _finnhub_throttle()
+            params = {"symbol": symbol, "token": api_key}
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code == 429:
+                LOGGER.warning("Finnhub rate limit hit (HTTP 429).")
+                break
+            response.raise_for_status()
+            payload = response.json()
+            price_value = payload.get("c")
+            if price_value in (None, 0, "0"):
+                continue
+            try:
+                prices[str(symbol).upper()] = float(price_value)
+            except (TypeError, ValueError):
+                continue
+    except ModuleNotFoundError:
+        LOGGER.warning("requests is not installed; cannot fetch Finnhub prices.")
+        return {}
+    except requests.RequestException as err:
+        LOGGER.warning("Finnhub request failed: %s", err)
+        return {}
+    return prices
+
+
+def _fetch_prices_with_suffixes(
+    symbols: list[str], suffixes: Iterable[str], fetcher: Callable[[list[str]], dict[str, float]]
+) -> dict[str, float]:
+    if not symbols:
+        return {}
+    mapped: dict[str, float] = {}
+    for suffix in suffixes:
+        lookup = {symbol: f"{symbol}{suffix}" for symbol in symbols if "." not in symbol}
+        if not lookup:
+            continue
+        fetched = fetcher(list(lookup.values()))
+        for original, candidate in lookup.items():
+            if original in mapped:
+                continue
+            price = fetched.get(candidate.upper())
+            if price is not None:
+                mapped[original] = price
+        symbols = [symbol for symbol in symbols if symbol not in mapped]
+        if not symbols:
+            break
+    return mapped
+
+
+def default_price_provider(symbols: Iterable[str]) -> dict[str, float]:
+    """Fetch latest ETF prices using Alpha Vantage, Finnhub, Yahoo Finance, and fallbacks."""
+
+    symbol_list = [symbol.strip().upper() for symbol in symbols if symbol]
+    if not symbol_list:
+        return {}
+    prices: dict[str, float] = {}
+    batch_size = 5
+    prices.update(_fetch_prices_alpha_vantage(symbol_list, _alpha_vantage_api_key))
+    missing = [symbol for symbol in symbol_list if symbol not in prices]
+    if missing:
+        prices.update(_fetch_prices_finnhub(missing, _finnhub_api_key))
+    missing = [symbol for symbol in symbol_list if symbol not in prices]
+    for index in range(0, len(missing), batch_size):
+        batch = missing[index : index + batch_size]
+        prices.update(_fetch_prices_batch(batch))
+        if index + batch_size < len(missing):
+            time.sleep(0.5)
+    missing = [symbol for symbol in symbol_list if symbol not in prices]
+    if missing:
+        LOGGER.warning("Attempting Yahoo Finance crumb fallback for symbols: %s", ", ".join(missing))
+        prices.update(_fetch_prices_yahoo_with_crumb(missing))
+        missing = [symbol for symbol in symbol_list if symbol not in prices]
+    if missing:
+        LOGGER.warning("Attempting Stooq fallback for symbols: %s", ", ".join(missing))
+        prices.update(_fetch_prices_stooq(missing))
+        missing = [symbol for symbol in symbol_list if symbol not in prices]
+    if missing:
+        suffixes = [".MI", ".DE", ".PA", ".L"]
+        LOGGER.warning(
+            "Attempting suffix fallback for symbols: %s (suffixes: %s)",
+            ", ".join(missing),
+            ", ".join(suffixes),
+        )
+        prices.update(_fetch_prices_with_suffixes(missing, suffixes, _fetch_prices_stooq))
+        missing = [symbol for symbol in symbol_list if symbol not in prices]
+    if missing:
+        LOGGER.warning("No prices returned for symbols: %s", ", ".join(missing))
+    return prices
+
+
+def percent_change(reference: float, current: float) -> float:
+    if reference == 0:
+        return 0.0
+    return ((current - reference) / reference) * 100.0
+
+
+@dataclass(slots=True)
+class MonitorDependencies:
+    price_provider: PriceProvider = default_price_provider
+
+
+class EtfMonitor:
+    """Background monitor that checks ETF changes and sends notifications."""
+
+    def __init__(self, config: EffectiveConfig, dependencies: MonitorDependencies | None = None) -> None:
+        self._config = config
+        self._deps = dependencies or MonitorDependencies()
+        self._state: MonitorState = load_state()
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        set_alpha_vantage_api_key(config.options.alpha_vantage_api_key)
+        set_finnhub_api_key(config.options.finnhub_api_key)
+        self._ha_client = HomeAssistantClient(
+            base_url=config.options.homeassistant_url.rstrip("/"),
+            token=config.options.homeassistant_token,
+            notify_service=config.options.notify_service,
+        )
+
+    @property
+    def state(self) -> MonitorState:
+        with self._lock:
+            return MonitorState(
+                baselines=dict(self._state.baselines),
+                last_baseline_update=self._state.last_baseline_update,
+            )
+
+    def update_config(self, config: EffectiveConfig) -> None:
+        with self._lock:
+            self._config = config
+            set_alpha_vantage_api_key(config.options.alpha_vantage_api_key)
+            set_finnhub_api_key(config.options.finnhub_api_key)
+            self._ha_client = HomeAssistantClient(
+                base_url=config.options.homeassistant_url.rstrip("/"),
+                token=config.options.homeassistant_token,
+                notify_service=config.options.notify_service,
+            )
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._run_loop, name="etf-monitor", daemon=True)
+        self._thread.start()
+        LOGGER.info("ETF monitor started.")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=5)
+        LOGGER.info("ETF monitor stopped.")
+
+    def run_once(self) -> float | None:
+        with self._lock:
+            config = self._config
+            symbols = list(dict.fromkeys(config.ui.etf_symbols))
+            threshold = config.ui.threshold_percent
+            retry_after_open = config.ui.market_open_retry_seconds
+        if not symbols:
+            LOGGER.debug("No ETF symbols configured; skipping poll.")
+            return None
+        now = datetime.now(tz=ZoneInfo("Europe/Rome"))
+        symbols, closed_symbols = _partition_symbols_for_market_hours(symbols, now)
+        if not symbols:
+            delay = _next_market_open_delay(closed_symbols, now, retry_after_open)
+            if delay is not None:
+                LOGGER.info("No symbols within market hours; next check in %.1fs.", delay)
+                return delay
+            LOGGER.info("No symbols within market hours; skipping price fetch.")
+            return None
+        try:
+            prices = self._deps.price_provider(symbols)
+        except Exception as err:  # noqa: BLE001
+            LOGGER.exception("Failed to fetch ETF prices: %s", err)
+            return None
+        if not prices:
+            LOGGER.warning("Price provider returned no prices.")
+            return None
+        alerts: list[tuple[str, float, float, float]] = []
+        baseline_updated = False
+        with self._lock:
+            for symbol, current_price in prices.items():
+                baseline = self._state.baselines.get(symbol)
+                if baseline is None:
+                    self._state.baselines[symbol] = current_price
+                    baseline_updated = True
+                    continue
+                change = percent_change(baseline, current_price)
+                if abs(change) >= threshold:
+                    alerts.append((symbol, baseline, current_price, change))
+                    self._state.baselines[symbol] = current_price
+                    baseline_updated = True
+            if baseline_updated:
+                self._state.last_baseline_update = now.isoformat(timespec="seconds")
+            save_state(self._state)
+        for symbol, baseline, current_price, change in alerts:
+            self._notify(symbol, baseline, current_price, change, threshold)
+        return None
+
+    def _notify(self, symbol: str, baseline: float, current_price: float, change: float, threshold: float) -> None:
+        direction = "salito" if change > 0 else "sceso"
+        title = f"ETF {symbol} {direction}"
+        message = (
+            f"{symbol} è {direction} del {change:.2f}% (soglia {threshold:.2f}%). "
+            f"Baseline: {baseline:.2f}, attuale: {current_price:.2f}."
+        )
+        if not self._ha_client.is_configured():
+            LOGGER.warning("Home Assistant client non configurato; alert non inviato: %s", message)
+            return
+        try:
+            self._ha_client.send_notification(title=title, message=message)
+            LOGGER.info("Alert inviato per %s: %s", symbol, message)
+        except Exception as err:  # noqa: BLE001
+            LOGGER.exception("Invio alert fallito per %s: %s", symbol, err)
+
+    def _run_loop(self) -> None:
+        while not self._stop_event.is_set():
+            override_delay = self.run_once()
+            with self._lock:
+                interval = max(self._config.options.poll_interval_seconds, 60)
+            sleep_for = override_delay if override_delay is not None else interval
+            self._stop_event.wait(sleep_for)
