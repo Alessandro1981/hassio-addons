@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from .config import EffectiveConfig, UiConfig, load_effective_config, save_ui_config
 from .etf_monitor import EtfMonitor
+from .storage import DailyOpenPrice, PriceSnapshot
 
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
@@ -81,7 +82,7 @@ def _parse_symbols(raw_symbols: str) -> list[str]:
     return [symbol for symbol in symbols if symbol]
 
 
-def _format_baseline_update(value: str | None) -> str | None:
+def _format_datetime(value: str | None) -> str | None:
     if not value:
         return None
     try:
@@ -95,6 +96,23 @@ def _format_baseline_update(value: str | None) -> str | None:
     return parsed.strftime("%Y-%m-%d %H:%M:%S CET")
 
 
+def _format_baseline_update(value: str | None) -> str | None:
+    return _format_datetime(value)
+
+
+def _snapshot_payload(snapshot: PriceSnapshot | DailyOpenPrice | None) -> dict[str, Any] | None:
+    if snapshot is None:
+        return None
+    payload: dict[str, Any] = {
+        "price": snapshot.price,
+        "read_at": snapshot.read_at,
+        "read_at_formatted": _format_datetime(snapshot.read_at),
+    }
+    if isinstance(snapshot, DailyOpenPrice):
+        payload["date"] = snapshot.date
+    return payload
+
+
 @APP.route("/")
 def index() -> str:
     config = load_effective_config()
@@ -104,6 +122,19 @@ def index() -> str:
         for symbol in config.ui.etf_symbols
         if symbol in state.baselines
     }
+    price_rows = []
+    for symbol in config.ui.etf_symbols:
+        latest = state.last_prices.get(symbol)
+        daily_open = state.daily_open_prices.get(symbol)
+        price_rows.append(
+            {
+                "symbol": symbol,
+                "daily_open_price": daily_open.price if daily_open else None,
+                "daily_open_read_at": _format_datetime(daily_open.read_at) if daily_open else None,
+                "latest_price": latest.price if latest else None,
+                "latest_read_at": _format_datetime(latest.read_at) if latest else None,
+            }
+        )
     return render_template(
         "index.html",
         ingress_root=_ingress_root(),
@@ -113,6 +144,7 @@ def index() -> str:
         poll_interval=config.options.poll_interval_seconds,
         notify_service=config.options.notify_service,
         baselines=baselines,
+        price_rows=price_rows,
         last_baseline_update=_format_baseline_update(state.last_baseline_update),
     )
 
@@ -129,6 +161,14 @@ def get_config() -> Any:
         "notify_service": config.options.notify_service,
         "baselines": state.baselines,
         "last_baseline_update": state.last_baseline_update,
+        "last_prices": {
+            symbol: _snapshot_payload(snapshot)
+            for symbol, snapshot in state.last_prices.items()
+        },
+        "daily_open_prices": {
+            symbol: _snapshot_payload(snapshot)
+            for symbol, snapshot in state.daily_open_prices.items()
+        },
     }
     return jsonify(payload)
 
