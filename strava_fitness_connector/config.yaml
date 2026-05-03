@@ -1,8 +1,10 @@
 name: Strava Fitness Connector
-version: "1.0.1"
+version: "1.0.2"
 slug: strava_fitness_connector
 description: Personal Strava fitness data connector with sync, stats and insights
 url: "https://github.com/Alessandro1981/strava-fitness-connector"
+icon: icon.png
+logo: logo.png
 arch:
   - aarch64
   - amd64
