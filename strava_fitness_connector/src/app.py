@@ -64,6 +64,10 @@ def seconds_to_hours(value: int | None) -> float:
     return round((value or 0) / 3600, 2)
 
 
+def seconds_to_minutes(value: int | None) -> int:
+    return round((value or 0) / 60)
+
+
 def calculate_intensity_factor(avg_hr: float | None) -> float:
     if avg_hr is None:
         return 1.0
@@ -82,6 +86,41 @@ def calculate_estimated_training_load(activity: Activity) -> float:
     duration_minutes = (activity.moving_time or 0) / 60
     intensity_factor = calculate_intensity_factor(activity.average_heartrate)
     return duration_minutes * intensity_factor
+
+
+def activity_to_dashboard_item(activity: Activity | None) -> dict | None:
+    if activity is None:
+        return None
+
+    return {
+        "id": activity.id,
+        "name": activity.name,
+        "type": activity.type,
+        "sport_type": activity.sport_type,
+        "start_date": activity.start_date,
+        "distance_km": meters_to_km(activity.distance),
+        "moving_time_minutes": seconds_to_minutes(activity.moving_time),
+        "moving_time_hours": seconds_to_hours(activity.moving_time),
+        "average_heartrate_bpm": activity.average_heartrate,
+        "total_elevation_gain_m": round(activity.total_elevation_gain or 0.0, 0),
+        "estimated_training_load": round(calculate_estimated_training_load(activity), 1),
+    }
+
+
+def athlete_to_dashboard_item(athlete: Athlete | None) -> dict | None:
+    if athlete is None:
+        return None
+
+    full_name = f"{athlete.firstname or ''} {athlete.lastname or ''}".strip()
+    return {
+        "id": athlete.id,
+        "firstname": athlete.firstname,
+        "lastname": athlete.lastname,
+        "name": full_name or None,
+        "city": athlete.city,
+        "state": athlete.state,
+        "country": athlete.country,
+    }
 
 
 def summarize_activities(activities: list[Activity]) -> dict:
@@ -417,6 +456,14 @@ def list_activities(limit: int = Query(default=20, ge=1, le=200), db: Session = 
     ]
 
 
+@app.get("/activities/latest")
+def latest_activity(db: Session = Depends(get_db)):
+    activity = db.query(Activity).order_by(Activity.start_date.desc()).first()
+    if activity is None:
+        raise HTTPException(status_code=404, detail="No activities imported yet")
+    return activity_to_dashboard_item(activity)
+
+
 @app.get("/activities/count")
 def count_activities(db: Session = Depends(get_db)):
     return {"count": db.query(Activity).count()}
@@ -434,6 +481,103 @@ def stats_year_to_date(db: Session = Depends(get_db)):
             "to": now.isoformat(),
         },
         **summarize_activities(ytd_activities),
+    }
+
+
+@app.get("/stats/monthly")
+def stats_monthly(db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
+
+    return {
+        "period": {
+            "month": current_month_start.strftime("%Y-%m"),
+            "from": current_month_start.isoformat(),
+            "to": now.isoformat(),
+        },
+        **summarize_activities(current_month_activities),
+    }
+
+
+@app.get("/stats/rolling")
+def stats_rolling(days: int = Query(default=7, ge=1, le=365), db: Session = Depends(get_db)):
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=days)
+    activities = load_activities_between(db, start, now + timedelta(seconds=1))
+
+    return {
+        "period": {
+            "days": days,
+            "from": start.isoformat(),
+            "to": now.isoformat(),
+        },
+        **summarize_activities(activities),
+    }
+
+
+@app.get("/stats/dashboard")
+def stats_dashboard(db: Session = Depends(get_db)):
+    athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
+    if athlete is None:
+        raise HTTPException(status_code=404, detail="No athlete authenticated yet")
+
+    now = datetime.now(timezone.utc)
+    current_week_start = datetime.combine((now - timedelta(days=now.weekday())).date(), datetime.min.time(), tzinfo=timezone.utc)
+    current_week_end = current_week_start + timedelta(days=7)
+    current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
+
+    latest = db.query(Activity).order_by(Activity.start_date.desc()).first()
+    current_week_activities = load_activities_between(db, current_week_start, current_week_end)
+    rolling_7_activities = load_activities_between(db, now - timedelta(days=7), now + timedelta(seconds=1))
+    rolling_30_activities = load_activities_between(db, now - timedelta(days=30), now + timedelta(seconds=1))
+    current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
+    ytd_activities = load_activities_between(db, year_start, now + timedelta(seconds=1))
+
+    return {
+        "generated_at": now.isoformat(),
+        "athlete": athlete_to_dashboard_item(athlete),
+        "last_activity": activity_to_dashboard_item(latest),
+        "current_week": {
+            "period": {
+                "week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}",
+                "from": current_week_start.isoformat(),
+                "to": current_week_end.isoformat(),
+            },
+            **summarize_activities(current_week_activities),
+        },
+        "rolling_7_days": {
+            "period": {
+                "days": 7,
+                "from": (now - timedelta(days=7)).isoformat(),
+                "to": now.isoformat(),
+            },
+            **summarize_activities(rolling_7_activities),
+        },
+        "rolling_30_days": {
+            "period": {
+                "days": 30,
+                "from": (now - timedelta(days=30)).isoformat(),
+                "to": now.isoformat(),
+            },
+            **summarize_activities(rolling_30_activities),
+        },
+        "current_month": {
+            "period": {
+                "month": current_month_start.strftime("%Y-%m"),
+                "from": current_month_start.isoformat(),
+                "to": now.isoformat(),
+            },
+            **summarize_activities(current_month_activities),
+        },
+        "year_to_date": {
+            "period": {
+                "from": year_start.isoformat(),
+                "to": now.isoformat(),
+            },
+            **summarize_activities(ytd_activities),
+        },
     }
 
 
