@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>ETF Checker</title>
-    <link rel="stylesheet" href="assets/style.css?v=0.4.12" />
+    <link rel="stylesheet" href="assets/style.css?v=0.4.14" />
   </head>
   <body data-ingress-root="{{ ingress_root }}">
     <main class="container">
@@ -70,29 +70,29 @@
           <span class="pill">{{ price_rows|length }} ETF</span>
         </div>
         {% if price_rows %}
-        <div class="price-grid">
-          {% for row in price_rows %}
-          <article class="price-card">
-            <div class="price-card-header">
-              <strong>{{ row.symbol }}</strong>
-              <span class="status-dot {{ 'active' if row.latest_price is not none else '' }}"></span>
-            </div>
-            <dl>
-              <div>
-                <dt>Apertura</dt>
-                <dd>{{ "%.2f"|format(row.daily_open_price) if row.daily_open_price is not none else "N/A" }}</dd>
-              </div>
-              <div>
-                <dt>Ultimo</dt>
-                <dd>{{ "%.2f"|format(row.latest_price) if row.latest_price is not none else "N/A" }}</dd>
-              </div>
-              <div class="full">
-                <dt>Letto alle</dt>
-                <dd>{{ row.latest_read_at if row.latest_read_at else "N/A" }}</dd>
-              </div>
-            </dl>
-          </article>
-          {% endfor %}
+        <div class="table-scroll" role="region" aria-label="Prezzi correnti ETF">
+          <table class="etf-table">
+            <thead>
+              <tr>
+                <th>Ticker</th>
+                <th>Apertura</th>
+                <th>Ultimo</th>
+                <th>Baseline</th>
+                <th>Letto alle</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in price_rows %}
+              <tr>
+                <td class="ticker"><span class="status-dot {{ 'active' if row.latest_price is not none else '' }}"></span>{{ row.symbol }}</td>
+                <td>{{ "%.2f"|format(row.daily_open_price) if row.daily_open_price is not none else "N/A" }}</td>
+                <td>{{ "%.2f"|format(row.latest_price) if row.latest_price is not none else "N/A" }}</td>
+                <td>{{ "%.2f"|format(baselines[row.symbol]) if row.symbol in baselines else "N/A" }}</td>
+                <td class="timestamp">{{ row.latest_read_at if row.latest_read_at else "N/A" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
         </div>
         {% else %}
         <p class="empty">Nessun dato disponibile. Esegui un polling manuale.</p>
