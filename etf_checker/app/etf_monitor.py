@@ -212,6 +212,74 @@ def _sleep_for_retry_after(retry_after: str | None, fallback_delay: float, conte
     time.sleep(delay)
 
 
+
+def _extract_yahoo_chart_price(symbol: str, payload: dict) -> float | None:
+    result = payload.get("chart", {}).get("result") or []
+    if not result:
+        LOGGER.debug("Yahoo Chart returned no result for %s: %s", symbol, payload.get("chart", {}).get("error"))
+        return None
+    quote = result[0]
+    meta = quote.get("meta", {})
+    for key in ("regularMarketPrice", "postMarketPrice", "previousClose"):
+        value = meta.get(key)
+        if value not in (None, "", "N/A"):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                continue
+    indicators = quote.get("indicators", {}).get("quote", [])
+    if indicators:
+        closes = indicators[0].get("close") or []
+        for value in reversed(closes):
+            if value not in (None, "", "N/A"):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+    LOGGER.debug("Yahoo Chart returned no usable price for %s.", symbol)
+    return None
+
+
+def _fetch_prices_yahoo_chart(symbols: list[str]) -> dict[str, float]:
+    """Primary Yahoo provider using the chart endpoint, which is often more stable for EU ETFs."""
+    if not symbols:
+        return {}
+    cooldown = _yahoo_cooldown_remaining()
+    if cooldown > 0:
+        LOGGER.warning("Skipping Yahoo Chart (cooldown %.1fs remaining).", cooldown)
+        return {}
+    headers = {"User-Agent": "ETF-Checker/1.0", "Accept": "application/json"}
+    prices: dict[str, float] = {}
+    try:
+        import requests
+
+        for symbol in symbols:
+            _yahoo_throttle()
+            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+            params = {"range": "1d", "interval": "1m", "includePrePost": "false"}
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            if response.status_code == 429:
+                cooldown = _retry_after_seconds(response.headers.get("Retry-After")) or 300.0
+                _set_yahoo_cooldown(cooldown)
+                LOGGER.warning("Yahoo Chart rate limited. Cooldown %.1fs.", cooldown)
+                break
+            if response.status_code in {401, 403, 404}:
+                LOGGER.warning("Yahoo Chart failed for %s: HTTP %s", symbol, response.status_code)
+                continue
+            response.raise_for_status()
+            price = _extract_yahoo_chart_price(symbol, response.json())
+            if price is not None:
+                prices[symbol.upper()] = price
+            else:
+                LOGGER.info("Yahoo Chart returned no usable price for %s.", symbol)
+    except ModuleNotFoundError:
+        LOGGER.warning("requests is not installed; cannot fetch Yahoo Chart prices.")
+        return {}
+    except requests.RequestException as err:
+        LOGGER.warning("Yahoo Chart request failed: %s", err)
+        return prices
+    return prices
+
 def _fetch_prices_batch(symbols: list[str]) -> dict[str, float]:
     cooldown = _yahoo_cooldown_remaining()
     if cooldown > 0:
@@ -389,9 +457,11 @@ def _fetch_prices_stooq(symbols: list[str]) -> dict[str, float]:
             reader = csv.DictReader(io.StringIO(response.text))
             row = next(reader, None)
             if not row:
+                LOGGER.debug("Stooq returned no CSV row for %s.", symbol)
                 continue
             close_value = row.get("Close")
             if close_value in (None, "", "N/A"):
+                LOGGER.info("Stooq returned no usable Close for %s: %s", symbol, row)
                 continue
             try:
                 prices[symbol.upper()] = float(close_value)
@@ -526,25 +596,43 @@ def default_price_provider(symbols: Iterable[str]) -> dict[str, float]:
         return {}
     prices: dict[str, float] = {}
     batch_size = 5
-    prices.update(_fetch_prices_alpha_vantage(symbol_list, _alpha_vantage_api_key))
-    missing = [symbol for symbol in symbol_list if symbol not in prices]
-    if missing:
-        prices.update(_fetch_prices_finnhub(missing, _finnhub_api_key))
+
+    LOGGER.info("Fetching prices for %d symbols: %s", len(symbol_list), ", ".join(symbol_list))
+    prices.update(_fetch_prices_yahoo_chart(symbol_list))
+    LOGGER.info("Yahoo Chart returned %d/%d prices.", len(prices), len(symbol_list))
+
     missing = [symbol for symbol in symbol_list if symbol not in prices]
     for index in range(0, len(missing), batch_size):
         batch = missing[index : index + batch_size]
         prices.update(_fetch_prices_batch(batch))
         if index + batch_size < len(missing):
             time.sleep(0.5)
+    if missing:
+        LOGGER.info("Yahoo Quote cumulative prices: %d/%d.", len(prices), len(symbol_list))
+
     missing = [symbol for symbol in symbol_list if symbol not in prices]
     if missing:
         LOGGER.warning("Attempting Yahoo Finance crumb fallback for symbols: %s", ", ".join(missing))
         prices.update(_fetch_prices_yahoo_with_crumb(missing))
+        LOGGER.info("Yahoo crumb cumulative prices: %d/%d.", len(prices), len(symbol_list))
         missing = [symbol for symbol in symbol_list if symbol not in prices]
+
     if missing:
         LOGGER.warning("Attempting Stooq fallback for symbols: %s", ", ".join(missing))
         prices.update(_fetch_prices_stooq(missing))
+        LOGGER.info("Stooq cumulative prices: %d/%d.", len(prices), len(symbol_list))
         missing = [symbol for symbol in symbol_list if symbol not in prices]
+
+    if missing:
+        prices.update(_fetch_prices_alpha_vantage(missing, _alpha_vantage_api_key))
+        LOGGER.info("Alpha Vantage cumulative prices: %d/%d.", len(prices), len(symbol_list))
+        missing = [symbol for symbol in symbol_list if symbol not in prices]
+
+    if missing:
+        prices.update(_fetch_prices_finnhub(missing, _finnhub_api_key))
+        LOGGER.info("Finnhub cumulative prices: %d/%d.", len(prices), len(symbol_list))
+        missing = [symbol for symbol in symbol_list if symbol not in prices]
+
     if missing:
         suffixes = [".MI", ".DE", ".DU", ".PA", ".L"]
         LOGGER.warning(
@@ -701,7 +789,7 @@ class EtfMonitor:
             self._ha_client.send_notification(title=title, message=message)
             LOGGER.info("Alert inviato per %s: %s", symbol, message)
         except Exception as err:  # noqa: BLE001
-            LOGGER.exception("Invio alert fallito per %s: %s", err)
+            LOGGER.exception("Invio alert fallito per %s: %s", symbol, err)
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
