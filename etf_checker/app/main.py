@@ -113,6 +113,12 @@ def _snapshot_payload(snapshot: PriceSnapshot | DailyOpenPrice | None) -> dict[s
     return payload
 
 
+def _percent_change(reference: float | None, current: float | None) -> float | None:
+    if reference in (None, 0) or current is None:
+        return None
+    return ((current - reference) / reference) * 100.0
+
+
 @APP.route("/")
 def index() -> str:
     config = load_effective_config()
@@ -126,13 +132,18 @@ def index() -> str:
     for symbol in config.ui.etf_symbols:
         latest = state.last_prices.get(symbol)
         daily_open = state.daily_open_prices.get(symbol)
+        latest_price = latest.price if latest else None
+        daily_open_price = daily_open.price if daily_open else None
+        daily_change_percent = _percent_change(daily_open_price, latest_price)
         price_rows.append(
             {
                 "symbol": symbol,
-                "daily_open_price": daily_open.price if daily_open else None,
+                "daily_open_price": daily_open_price,
                 "daily_open_read_at": _format_datetime(daily_open.read_at) if daily_open else None,
-                "latest_price": latest.price if latest else None,
+                "latest_price": latest_price,
                 "latest_read_at": _format_datetime(latest.read_at) if latest else None,
+                "daily_change_percent": daily_change_percent,
+                "daily_change_class": "positive" if daily_change_percent and daily_change_percent > 0 else "negative" if daily_change_percent and daily_change_percent < 0 else "neutral",
             }
         )
     return render_template(
