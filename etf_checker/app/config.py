@@ -9,6 +9,7 @@ from typing import Any
 
 OPTIONS_PATH = Path("/data/options.json")
 UI_CONFIG_PATH = Path("/data/ui_config.json")
+DEFAULT_NOTIFY_SERVICE = "notify/mobile_app_mio_telefono"
 
 
 @dataclass(slots=True)
@@ -17,7 +18,7 @@ class AddonOptions:
 
     homeassistant_url: str = "http://supervisor/core"
     homeassistant_token: str = ""
-    notify_service: str = "notify/mobile_app_mio_telefono"
+    notify_service: str = DEFAULT_NOTIFY_SERVICE
     alpha_vantage_api_key: str = ""
     finnhub_api_key: str = ""
     poll_interval_seconds: int = 900
@@ -32,6 +33,7 @@ class UiConfig:
     etf_symbols: list[str]
     threshold_percent: float
     market_open_retry_seconds: int
+    notify_services: list[str]
 
 
 @dataclass(slots=True)
@@ -49,12 +51,41 @@ def _load_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
+def _normalize_notify_service(value: str) -> str:
+    cleaned = value.strip()
+    if not cleaned:
+        return ""
+    if cleaned.startswith("notify."):
+        return cleaned.replace(".", "/", 1)
+    return cleaned
+
+
+def _parse_notify_services(raw: Any, fallback: str) -> list[str]:
+    values: list[str] = []
+    if isinstance(raw, list):
+        values = [str(item) for item in raw]
+    elif isinstance(raw, str) and raw.strip():
+        values = [item.strip() for item in raw.replace("\n", ",").split(",")]
+    elif fallback:
+        values = [fallback]
+
+    services: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized = _normalize_notify_service(value)
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        services.append(normalized)
+    return services
+
+
 def load_addon_options() -> AddonOptions:
     raw = _load_json(OPTIONS_PATH)
     return AddonOptions(
         homeassistant_url=str(raw.get("homeassistant_url", AddonOptions.homeassistant_url)).strip(),
         homeassistant_token=str(raw.get("homeassistant_token", AddonOptions.homeassistant_token)).strip(),
-        notify_service=str(raw.get("notify_service", AddonOptions.notify_service)).strip(),
+        notify_service=_normalize_notify_service(str(raw.get("notify_service", AddonOptions.notify_service))),
         alpha_vantage_api_key=str(
             raw.get("alpha_vantage_api_key", AddonOptions.alpha_vantage_api_key)
         ).strip(),
@@ -67,7 +98,7 @@ def load_addon_options() -> AddonOptions:
     )
 
 
-def load_ui_config(default_threshold: float) -> UiConfig:
+def load_ui_config(default_threshold: float, default_notify_service: str) -> UiConfig:
     raw = _load_json(UI_CONFIG_PATH)
     symbols = raw.get("etf_symbols", [])
     if not isinstance(symbols, list):
@@ -84,10 +115,15 @@ def load_ui_config(default_threshold: float) -> UiConfig:
     except (TypeError, ValueError):
         retry_value = 60
     retry_value = max(retry_value, 0)
+    notify_services = _parse_notify_services(
+        raw.get("notify_services", raw.get("notify_service")),
+        default_notify_service,
+    )
     return UiConfig(
         etf_symbols=cleaned_symbols,
         threshold_percent=max(threshold_value, 0.1),
         market_open_retry_seconds=retry_value,
+        notify_services=notify_services,
     )
 
 
@@ -97,6 +133,7 @@ def save_ui_config(config: UiConfig) -> None:
         "etf_symbols": config.etf_symbols,
         "threshold_percent": config.threshold_percent,
         "market_open_retry_seconds": config.market_open_retry_seconds,
+        "notify_services": config.notify_services,
     }
     with UI_CONFIG_PATH.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
@@ -104,5 +141,7 @@ def save_ui_config(config: UiConfig) -> None:
 
 def load_effective_config() -> EffectiveConfig:
     options = load_addon_options()
-    ui = load_ui_config(options.default_threshold_percent)
+    ui = load_ui_config(options.default_threshold_percent, options.notify_service)
+    if ui.notify_services:
+        options.notify_service = ",".join(ui.notify_services)
     return EffectiveConfig(options=options, ui=ui)
