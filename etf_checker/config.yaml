@@ -1,5 +1,5 @@
 name: ETF Checker
-version: "0.4.19"
+version: "0.4.20"
 slug: etf_checker
 description: Monitora ETF e invia notifiche.
 url: "https://github.com/Alessandro1981/etf-checker"
