@@ -189,9 +189,9 @@ def get_notify_services() -> Any:
         )
         response.raise_for_status()
         services_payload = response.json()
-    except Exception as err:  # noqa: BLE001
-        LOGGER.warning("Unable to fetch Home Assistant services: %s", err)
-        return jsonify({"services": [], "error": str(err)})
+    except Exception:  # noqa: BLE001
+        LOGGER.exception("Unable to fetch Home Assistant services")
+        return jsonify({"services": [], "error": "Unable to fetch notify services"})
 
     notify_services: list[str] = []
     for domain_payload in services_payload:
