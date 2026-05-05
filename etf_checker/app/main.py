@@ -14,7 +14,7 @@ from flask import Flask, jsonify, redirect, render_template, request, send_from_
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .config import EffectiveConfig, UiConfig, load_effective_config, save_ui_config
+from .config import EffectiveConfig, UiConfig, load_effective_config, parse_notify_services, save_ui_config
 from .etf_monitor import EtfMonitor
 from .storage import DailyOpenPrice, PriceSnapshot
 
@@ -58,6 +58,7 @@ def _log_startup_diagnostics() -> None:
     LOGGER.debug("UI config: symbols=%s", ", ".join(ui.etf_symbols) if ui.etf_symbols else "<none>")
     LOGGER.debug("UI config: threshold_percent=%s", ui.threshold_percent)
     LOGGER.debug("UI config: market_open_retry_seconds=%s", ui.market_open_retry_seconds)
+    LOGGER.debug("UI config: notify_services=%s", ", ".join(ui.notify_services) if ui.notify_services else "<none>")
     data_path = Path("/data")
     LOGGER.debug("Data path exists: %s", data_path.exists())
     LOGGER.debug("Options file exists: %s", Path("/data/options.json").exists())
@@ -74,6 +75,8 @@ def _install_exception_logging() -> None:
 
 def _merge_config(ui_config: UiConfig) -> EffectiveConfig:
     current = load_effective_config()
+    if ui_config.notify_services:
+        current.options.notify_service = ",".join(ui_config.notify_services)
     return EffectiveConfig(options=current.options, ui=ui_config)
 
 
@@ -119,6 +122,13 @@ def _percent_change(reference: float | None, current: float | None) -> float | N
     return ((current - reference) / reference) * 100.0
 
 
+def _homeassistant_headers() -> dict[str, str]:
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("SUPERVISOR_TOKEN is not available. Check homeassistant_api in config.yaml.")
+    return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+
 @APP.route("/")
 def index() -> str:
     config = load_effective_config()
@@ -154,6 +164,7 @@ def index() -> str:
         market_open_retry_seconds=config.ui.market_open_retry_seconds,
         poll_interval=config.options.poll_interval_seconds,
         notify_service=config.options.notify_service,
+        notify_services=config.ui.notify_services,
         baselines=baselines,
         price_rows=price_rows,
         last_baseline_update=_format_baseline_update(state.last_baseline_update),
@@ -163,6 +174,35 @@ def index() -> str:
 @APP.get("/assets/style.css")
 def stylesheet() -> Any:
     return send_from_directory(Path(__file__).parent / "static", "style.css")
+
+
+@APP.get("/api/notify-services")
+def get_notify_services() -> Any:
+    try:
+        import requests
+
+        config = load_effective_config()
+        response = requests.get(
+            f"{config.options.homeassistant_url}/api/services",
+            headers=_homeassistant_headers(),
+            timeout=10,
+        )
+        response.raise_for_status()
+        services_payload = response.json()
+    except Exception as err:  # noqa: BLE001
+        LOGGER.warning("Unable to fetch Home Assistant services: %s", err)
+        return jsonify({"services": [], "error": str(err)})
+
+    notify_services: list[str] = []
+    for domain_payload in services_payload:
+        if domain_payload.get("domain") != "notify":
+            continue
+        services = domain_payload.get("services", {})
+        if isinstance(services, dict):
+            notify_services.extend(f"notify/{service}" for service in services.keys())
+        elif isinstance(services, list):
+            notify_services.extend(f"notify/{service}" for service in services)
+    return jsonify({"services": sorted(set(notify_services))})
 
 
 @APP.get("/api/config")
@@ -175,6 +215,7 @@ def get_config() -> Any:
         "market_open_retry_seconds": config.ui.market_open_retry_seconds,
         "poll_interval_seconds": config.options.poll_interval_seconds,
         "notify_service": config.options.notify_service,
+        "notify_services": config.ui.notify_services,
         "baselines": state.baselines,
         "last_baseline_update": state.last_baseline_update,
         "last_prices": {
@@ -206,10 +247,16 @@ def update_config() -> Any:
     except (TypeError, ValueError):
         retry_after_open = load_effective_config().ui.market_open_retry_seconds
     retry_after_open = max(retry_after_open, 0)
+    current_config = load_effective_config()
+    notify_services = parse_notify_services(
+        data.get("notify_services", data.get("notify_service")),
+        current_config.options.notify_service,
+    )
     ui_config = UiConfig(
         etf_symbols=symbols,
         threshold_percent=threshold,
         market_open_retry_seconds=retry_after_open,
+        notify_services=notify_services,
     )
     save_ui_config(ui_config)
     MONITOR.update_config(_merge_config(ui_config))
@@ -220,6 +267,7 @@ def update_config() -> Any:
             "etf_symbols": symbols,
             "threshold_percent": threshold,
             "market_open_retry_seconds": retry_after_open,
+            "notify_services": notify_services,
         }
     )
 
