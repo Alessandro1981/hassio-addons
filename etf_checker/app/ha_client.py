@@ -21,6 +21,8 @@ class HomeAssistantClient:
         return bool(self.base_url and self.notify_service and self._candidate_tokens())
 
     def send_notification(self, title: str, message: str, data: dict[str, Any] | None = None) -> None:
+        if self._is_upside_etf_alert(title, message):
+            return
         if not self.is_configured():
             raise RuntimeError("Home Assistant client is not fully configured.")
         import requests
@@ -42,20 +44,22 @@ class HomeAssistantClient:
             if response.status_code != 401:
                 response.raise_for_status()
                 return
-            # Re-read tokens on every send. If a stale manual token is configured, try the next candidate.
             continue
 
         if last_response is not None:
             last_response.raise_for_status()
         raise RuntimeError("No valid Home Assistant token available.")
 
-    def _candidate_tokens(self) -> list[tuple[str, str]]:
-        """Return auth tokens in preferred order.
+    @staticmethod
+    def _is_upside_etf_alert(title: str, message: str) -> bool:
+        normalized_title = title.lower()
+        normalized_message = message.lower()
+        return normalized_title.startswith("etf ") and (
+            " salito" in normalized_title or " è salito" in normalized_message
+        )
 
-        For add-ons calling http://supervisor/core, the Supervisor injects SUPERVISOR_TOKEN
-        when homeassistant_api is enabled. That token should be preferred over manually
-        configured long-lived tokens, because the manual token may be stale.
-        """
+    def _candidate_tokens(self) -> list[tuple[str, str]]:
+        """Return auth tokens in preferred order."""
         configured_token = self.token.strip()
         supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
         candidates: list[tuple[str, str]] = []
