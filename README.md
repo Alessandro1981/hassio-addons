@@ -24,15 +24,24 @@ https://github.com/Alessandro1981/hassio-addons/tree/main/strava_fitness_connect
 
 ### ETF Checker
 
-Personal ETF monitoring add-on that checks configured ETF prices and sends Home Assistant Companion notifications when a percentage threshold is exceeded.
+Personal ETF monitoring add-on for Home Assistant focused on long-term ETF portfolios and deep-and-hold strategies.
 
 Features:
 - ETF price monitoring
+- Daily opening price tracking
+- Latest price dashboard with timestamps
+- Percentage variation from daily opening price
+- Home Assistant native dashboard UI
+- Dynamic notification service selector (notify.*)
+- Automatic Home Assistant Supervisor token usage
+- Market-hours-aware polling
 - Configurable polling interval
 - Configurable percentage threshold
-- Daily opening price and latest price dashboard
+- Alpha Vantage and Finnhub provider support
+- Rate-limit protection and provider cooldown handling
+- Downside-only notifications (alerts only on ETF drops)
 - Home Assistant Companion notifications
-- Alpha Vantage and Finnhub API key configuration
+- Mobile-friendly responsive UI
 
 Source repository / Home Assistant catalog:
 https://github.com/Alessandro1981/hassio-addons/tree/main/etf_checker
