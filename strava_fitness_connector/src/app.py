@@ -17,16 +17,8 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title=settings.app_name)
 
-
-@app.get("/")
-def root(db: Session = Depends(get_db)):
-    athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
-    if athlete is None:
-        return RedirectResponse(url="/auth/login")
-    return RedirectResponse(url="/docs")
-
-
 HIKING_TYPES = {"hike", "hiking", "trekking", "escursionismo"}
+RUN_TYPES = {"run", "running", "trailrun", "virtualrun", "treadmill", "corsa"}
 BIKE_TYPES = {"ride", "bikeride", "virtualride", "ebikeride", "mountainbikeride", "gravelride", "indoorcycling", "spinning", "bike", "cycling"}
 SPORT_WALK_TYPES = {"walk", "walking", "racewalk", "sportwalk", "camminata", "camminatasportiva"}
 YOGA_MEDITATION_TYPES = {"yoga", "meditation", "meditazione"}
@@ -126,6 +118,7 @@ def athlete_to_dashboard_item(athlete: Athlete | None) -> dict | None:
 def summarize_activities(activities: list[Activity]) -> dict:
     total_distance = 0.0
     hiking_distance = 0.0
+    running_distance = 0.0
     bike_distance = 0.0
     sport_walk_distance = 0.0
     yoga_meditation_time = 0
@@ -158,6 +151,8 @@ def summarize_activities(activities: list[Activity]) -> dict:
 
         if activity_matches(activity, HIKING_TYPES):
             hiking_distance += distance
+        elif activity_matches(activity, RUN_TYPES):
+            running_distance += distance
         elif activity_matches(activity, BIKE_TYPES):
             bike_distance += distance
         elif activity_matches(activity, SPORT_WALK_TYPES):
@@ -174,6 +169,7 @@ def summarize_activities(activities: list[Activity]) -> dict:
         "activities_count": len(activities),
         "total_distance_km": meters_to_km(total_distance),
         "hiking_trekking_distance_km": meters_to_km(hiking_distance),
+        "running_distance_km": meters_to_km(running_distance),
         "bike_distance_km": meters_to_km(bike_distance),
         "sport_walk_distance_km": meters_to_km(sport_walk_distance),
         "yoga_meditation_time_hours": seconds_to_hours(yoga_meditation_time),
@@ -229,103 +225,37 @@ def build_rule_based_insights(current: dict, previous: dict, ytd_average: dict) 
 
     if load_change_prev is not None:
         if load_change_prev > 25:
-            add_insight(
-                insights,
-                "training_load",
-                "warning",
-                f"Il carico stimato del mese corrente è aumentato del {load_change_prev}% rispetto al mese precedente.",
-                "Valuta di distribuire meglio il carico o inserire recupero se percepisci stanchezza.",
-            )
+            add_insight(insights, "training_load", "warning", f"Il carico stimato del mese corrente è aumentato del {load_change_prev}% rispetto al mese precedente.", "Valuta di distribuire meglio il carico o inserire recupero se percepisci stanchezza.")
         elif load_change_prev < -25:
-            add_insight(
-                insights,
-                "training_load",
-                "info",
-                f"Il carico stimato del mese corrente è diminuito del {abs(load_change_prev)}% rispetto al mese precedente.",
-                "Può essere una fase di scarico utile; verifica però che sia coerente con i tuoi obiettivi.",
-            )
+            add_insight(insights, "training_load", "info", f"Il carico stimato del mese corrente è diminuito del {abs(load_change_prev)}% rispetto al mese precedente.", "Può essere una fase di scarico utile; verifica però che sia coerente con i tuoi obiettivi.")
         else:
-            add_insight(
-                insights,
-                "training_load",
-                "positive",
-                f"Il carico stimato è relativamente stabile rispetto al mese precedente ({load_change_prev}%).",
-                "La stabilità del carico è una buona base per costruire progressi sostenibili.",
-            )
+            add_insight(insights, "training_load", "positive", f"Il carico stimato è relativamente stabile rispetto al mese precedente ({load_change_prev}%).", "La stabilità del carico è una buona base per costruire progressi sostenibili.")
 
     if load_change_ytd is not None:
         if load_change_ytd > 20:
-            add_insight(
-                insights,
-                "ytd_comparison",
-                "info",
-                f"Il mese corrente è sopra la tua media mensile da inizio anno del {load_change_ytd}% sul carico stimato.",
-                "Buon segnale se accompagnato da recupero adeguato e assenza di fastidi.",
-            )
+            add_insight(insights, "ytd_comparison", "info", f"Il mese corrente è sopra la tua media mensile da inizio anno del {load_change_ytd}% sul carico stimato.", "Buon segnale se accompagnato da recupero adeguato e assenza di fastidi.")
         elif load_change_ytd < -20:
-            add_insight(
-                insights,
-                "ytd_comparison",
-                "info",
-                f"Il mese corrente è sotto la tua media mensile da inizio anno del {abs(load_change_ytd)}% sul carico stimato.",
-                "Potrebbe essere un mese più leggero: utile se pianificato, da correggere se non voluto.",
-            )
+            add_insight(insights, "ytd_comparison", "info", f"Il mese corrente è sotto la tua media mensile da inizio anno del {abs(load_change_ytd)}% sul carico stimato.", "Potrebbe essere un mese più leggero: utile se pianificato, da correggere se non voluto.")
 
     if distance_change_prev is not None and abs(distance_change_prev) >= 20:
         direction = "aumentata" if distance_change_prev > 0 else "diminuita"
-        add_insight(
-            insights,
-            "volume",
-            "info",
-            f"La distanza totale è {direction} del {abs(distance_change_prev)}% rispetto al mese precedente.",
-            "Osserva se il cambio di volume è coerente con energia, recupero e qualità degli allenamenti.",
-        )
+        add_insight(insights, "volume", "info", f"La distanza totale è {direction} del {abs(distance_change_prev)}% rispetto al mese precedente.", "Osserva se il cambio di volume è coerente con energia, recupero e qualità degli allenamenti.")
 
     if active_days_delta >= 3:
-        add_insight(
-            insights,
-            "consistency",
-            "positive",
-            f"Hai aumentato la consistenza: {current['active_days']} giorni attivi nel mese corrente, {active_days_delta} in più del mese precedente.",
-            "Distribuire le attività su più giorni aiuta a ridurre picchi di carico.",
-        )
+        add_insight(insights, "consistency", "positive", f"Hai aumentato la consistenza: {current['active_days']} giorni attivi nel mese corrente, {active_days_delta} in più del mese precedente.", "Distribuire le attività su più giorni aiuta a ridurre picchi di carico.")
     elif active_days_delta <= -3:
-        add_insight(
-            insights,
-            "consistency",
-            "info",
-            f"La consistenza è calata: {current['active_days']} giorni attivi nel mese corrente, {abs(active_days_delta)} in meno del mese precedente.",
-            "Può essere utile ripristinare micro-sessioni leggere per mantenere continuità.",
-        )
+        add_insight(insights, "consistency", "info", f"La consistenza è calata: {current['active_days']} giorni attivi nel mese corrente, {abs(active_days_delta)} in meno del mese precedente.", "Può essere utile ripristinare micro-sessioni leggere per mantenere continuità.")
 
     padel_ratio = safe_ratio(current["tennis_padel_time_hours"], current["total_time_hours"])
     if padel_ratio is not None and padel_ratio >= 0.25:
-        add_insight(
-            insights,
-            "high_intensity_mix",
-            "info",
-            f"Padel/tennis pesa circa il {round(padel_ratio * 100, 1)}% del tempo totale del mese corrente.",
-            "È una componente intensa e intermittente: bilanciala con recupero e lavoro aerobico leggero.",
-        )
+        add_insight(insights, "high_intensity_mix", "info", f"Padel/tennis pesa circa il {round(padel_ratio * 100, 1)}% del tempo totale del mese corrente.", "È una componente intensa e intermittente: bilanciala con recupero e lavoro aerobico leggero.")
 
     recovery_ratio = safe_ratio(current["yoga_meditation_time_hours"], current["total_time_hours"])
     if recovery_ratio is not None and recovery_ratio >= 0.15:
-        add_insight(
-            insights,
-            "recovery",
-            "positive",
-            f"Yoga/meditazione rappresenta circa il {round(recovery_ratio * 100, 1)}% del tempo totale del mese corrente.",
-            "Buon equilibrio tra attività e recupero attivo.",
-        )
+        add_insight(insights, "recovery", "positive", f"Yoga/meditazione rappresenta circa il {round(recovery_ratio * 100, 1)}% del tempo totale del mese corrente.", "Buon equilibrio tra attività e recupero attivo.")
 
     if not insights:
-        add_insight(
-            insights,
-            "summary",
-            "info",
-            "Non emergono variazioni forti rispetto ai riferimenti disponibili.",
-            "Continua a monitorare volume, carico stimato e consistenza.",
-        )
+        add_insight(insights, "summary", "info", "Non emergono variazioni forti rispetto ai riferimenti disponibili.", "Continua a monitorare volume, carico stimato e consistenza.")
 
     return insights
 
@@ -355,6 +285,14 @@ def start_background_sync():
         thread = threading.Thread(target=background_sync, daemon=True)
         thread.start()
         print(f"[SYNC] Background sync started every {settings.sync_interval_seconds} seconds")
+
+
+@app.get("/")
+def root(db: Session = Depends(get_db)):
+    athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
+    if athlete is None:
+        return RedirectResponse(url="/auth/login")
+    return RedirectResponse(url="/docs")
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -396,11 +334,7 @@ def get_athlete(db: Session = Depends(get_db)):
 
 
 @app.post("/import/activities", response_model=ImportResponse)
-def import_activities(
-    max_pages: int = Query(default=10, ge=1, le=100),
-    per_page: int = Query(default=50, ge=1, le=200),
-    db: Session = Depends(get_db),
-) -> ImportResponse:
+def import_activities(max_pages: int = Query(default=10, ge=1, le=100), per_page: int = Query(default=50, ge=1, le=200), db: Session = Depends(get_db)) -> ImportResponse:
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
         raise HTTPException(status_code=404, detail="Authenticate first at /auth/login")
@@ -411,22 +345,13 @@ def import_activities(
 
 
 @app.post("/sync/incremental")
-def sync_incremental(
-    per_page: int = Query(default=200, ge=1, le=200),
-    overlap_seconds: int = Query(default=86400, ge=0, le=604800),
-    db: Session = Depends(get_db),
-):
+def sync_incremental(per_page: int = Query(default=200, ge=1, le=200), overlap_seconds: int = Query(default=86400, ge=0, le=604800), db: Session = Depends(get_db)):
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
         raise HTTPException(status_code=404, detail="Authenticate first at /auth/login")
 
     importer = ActivityImporter(db)
-    imported, pages = importer.sync_incremental(
-        athlete_id=athlete.id,
-        per_page=per_page,
-        overlap_seconds=overlap_seconds,
-    )
-
+    imported, pages = importer.sync_incremental(athlete_id=athlete.id, per_page=per_page, overlap_seconds=overlap_seconds)
     sync_state = db.get(SyncState, 1)
 
     return {
@@ -441,19 +366,7 @@ def sync_incremental(
 @app.get("/activities")
 def list_activities(limit: int = Query(default=20, ge=1, le=200), db: Session = Depends(get_db)):
     rows = db.query(Activity).order_by(Activity.start_date.desc()).limit(limit).all()
-    return [
-        {
-            "id": row.id,
-            "name": row.name,
-            "sport_type": row.sport_type,
-            "start_date": row.start_date,
-            "distance": row.distance,
-            "moving_time": row.moving_time,
-            "average_heartrate": row.average_heartrate,
-            "total_elevation_gain": row.total_elevation_gain,
-        }
-        for row in rows
-    ]
+    return [activity_to_dashboard_item(row) for row in rows]
 
 
 @app.get("/activities/latest")
@@ -475,13 +388,7 @@ def stats_year_to_date(db: Session = Depends(get_db)):
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
     ytd_activities = load_activities_between(db, year_start, now + timedelta(seconds=1))
 
-    return {
-        "period": {
-            "from": year_start.isoformat(),
-            "to": now.isoformat(),
-        },
-        **summarize_activities(ytd_activities),
-    }
+    return {"period": {"from": year_start.isoformat(), "to": now.isoformat()}, **summarize_activities(ytd_activities)}
 
 
 @app.get("/stats/monthly")
@@ -490,14 +397,7 @@ def stats_monthly(db: Session = Depends(get_db)):
     current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
 
-    return {
-        "period": {
-            "month": current_month_start.strftime("%Y-%m"),
-            "from": current_month_start.isoformat(),
-            "to": now.isoformat(),
-        },
-        **summarize_activities(current_month_activities),
-    }
+    return {"period": {"month": current_month_start.strftime("%Y-%m"), "from": current_month_start.isoformat(), "to": now.isoformat()}, **summarize_activities(current_month_activities)}
 
 
 @app.get("/stats/rolling")
@@ -506,14 +406,7 @@ def stats_rolling(days: int = Query(default=7, ge=1, le=365), db: Session = Depe
     start = now - timedelta(days=days)
     activities = load_activities_between(db, start, now + timedelta(seconds=1))
 
-    return {
-        "period": {
-            "days": days,
-            "from": start.isoformat(),
-            "to": now.isoformat(),
-        },
-        **summarize_activities(activities),
-    }
+    return {"period": {"days": days, "from": start.isoformat(), "to": now.isoformat()}, **summarize_activities(activities)}
 
 
 @app.get("/stats/dashboard")
@@ -539,45 +432,11 @@ def stats_dashboard(db: Session = Depends(get_db)):
         "generated_at": now.isoformat(),
         "athlete": athlete_to_dashboard_item(athlete),
         "last_activity": activity_to_dashboard_item(latest),
-        "current_week": {
-            "period": {
-                "week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}",
-                "from": current_week_start.isoformat(),
-                "to": current_week_end.isoformat(),
-            },
-            **summarize_activities(current_week_activities),
-        },
-        "rolling_7_days": {
-            "period": {
-                "days": 7,
-                "from": (now - timedelta(days=7)).isoformat(),
-                "to": now.isoformat(),
-            },
-            **summarize_activities(rolling_7_activities),
-        },
-        "rolling_30_days": {
-            "period": {
-                "days": 30,
-                "from": (now - timedelta(days=30)).isoformat(),
-                "to": now.isoformat(),
-            },
-            **summarize_activities(rolling_30_activities),
-        },
-        "current_month": {
-            "period": {
-                "month": current_month_start.strftime("%Y-%m"),
-                "from": current_month_start.isoformat(),
-                "to": now.isoformat(),
-            },
-            **summarize_activities(current_month_activities),
-        },
-        "year_to_date": {
-            "period": {
-                "from": year_start.isoformat(),
-                "to": now.isoformat(),
-            },
-            **summarize_activities(ytd_activities),
-        },
+        "current_week": {"period": {"week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}", "from": current_week_start.isoformat(), "to": current_week_end.isoformat()}, **summarize_activities(current_week_activities)},
+        "rolling_7_days": {"period": {"days": 7, "from": (now - timedelta(days=7)).isoformat(), "to": now.isoformat()}, **summarize_activities(rolling_7_activities)},
+        "rolling_30_days": {"period": {"days": 30, "from": (now - timedelta(days=30)).isoformat(), "to": now.isoformat()}, **summarize_activities(rolling_30_activities)},
+        "current_month": {"period": {"month": current_month_start.strftime("%Y-%m"), "from": current_month_start.isoformat(), "to": now.isoformat()}, **summarize_activities(current_month_activities)},
+        "year_to_date": {"period": {"from": year_start.isoformat(), "to": now.isoformat()}, **summarize_activities(ytd_activities)},
     }
 
 
@@ -590,23 +449,12 @@ def stats_weekly(db: Session = Depends(get_db)):
 
     current_activities = load_activities_between(db, current_week_start, current_week_end)
     previous_activities = load_activities_between(db, previous_week_start, current_week_start)
-
     current_summary = summarize_activities(current_activities)
     previous_summary = summarize_activities(previous_activities)
 
     return {
-        "current_week": {
-            "week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}",
-            "from": current_week_start.isoformat(),
-            "to": current_week_end.isoformat(),
-            **current_summary,
-        },
-        "previous_week": {
-            "week": f"{previous_week_start.isocalendar().year}-W{previous_week_start.isocalendar().week:02d}",
-            "from": previous_week_start.isoformat(),
-            "to": current_week_start.isoformat(),
-            **previous_summary,
-        },
+        "current_week": {"week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}", "from": current_week_start.isoformat(), "to": current_week_end.isoformat(), **current_summary},
+        "previous_week": {"week": f"{previous_week_start.isocalendar().year}-W{previous_week_start.isocalendar().week:02d}", "from": previous_week_start.isoformat(), "to": current_week_start.isoformat(), **previous_summary},
         "trend_vs_previous_week": {
             "distance_percent": percentage_change(current_summary["total_distance_km"], previous_summary["total_distance_km"]),
             "time_percent": percentage_change(current_summary["total_time_hours"], previous_summary["total_time_hours"]),
@@ -625,25 +473,15 @@ def stats_weekly(db: Session = Depends(get_db)):
 def insights_summary(db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
     current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
-    if now.month == 1:
-        previous_month_start = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc)
-    else:
-        previous_month_start = datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
+    previous_month_start = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc) if now.month == 1 else datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
 
-    current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
-    previous_month_activities = load_activities_between(db, previous_month_start, current_month_start)
-    ytd_activities = load_activities_between(db, year_start, now + timedelta(seconds=1))
-
-    current_summary = summarize_activities(current_month_activities)
-    previous_summary = summarize_activities(previous_month_activities)
-    ytd_summary = summarize_activities(ytd_activities)
+    current_summary = summarize_activities(load_activities_between(db, current_month_start, now + timedelta(seconds=1)))
+    previous_summary = summarize_activities(load_activities_between(db, previous_month_start, current_month_start))
+    ytd_summary = summarize_activities(load_activities_between(db, year_start, now + timedelta(seconds=1)))
 
     months_elapsed = max(1, now.month)
-    ytd_average = {
-        key: round(value / months_elapsed, 2) if isinstance(value, (int, float)) else value
-        for key, value in ytd_summary.items()
-    }
+    ytd_average = {key: round(value / months_elapsed, 2) if isinstance(value, (int, float)) else value for key, value in ytd_summary.items()}
 
     return {
         "period": {
