@@ -260,6 +260,13 @@ def build_rule_based_insights(current: dict, previous: dict, ytd_average: dict) 
     return insights
 
 
+def pick_training_load_insight(insights: list[dict]) -> dict | None:
+    for insight in insights:
+        if insight.get("category") == "training_load":
+            return insight
+    return insights[0] if insights else None
+
+
 def background_sync():
     while True:
         try:
@@ -419,6 +426,7 @@ def stats_dashboard(db: Session = Depends(get_db)):
     current_week_start = datetime.combine((now - timedelta(days=now.weekday())).date(), datetime.min.time(), tzinfo=timezone.utc)
     current_week_end = current_week_start + timedelta(days=7)
     current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
+    previous_month_start = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc) if now.month == 1 else datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
 
     latest = db.query(Activity).order_by(Activity.start_date.desc()).first()
@@ -426,7 +434,15 @@ def stats_dashboard(db: Session = Depends(get_db)):
     rolling_7_activities = load_activities_between(db, now - timedelta(days=7), now + timedelta(seconds=1))
     rolling_30_activities = load_activities_between(db, now - timedelta(days=30), now + timedelta(seconds=1))
     current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
+    previous_month_activities = load_activities_between(db, previous_month_start, current_month_start)
     ytd_activities = load_activities_between(db, year_start, now + timedelta(seconds=1))
+
+    current_month_summary = summarize_activities(current_month_activities)
+    previous_month_summary = summarize_activities(previous_month_activities)
+    ytd_summary = summarize_activities(ytd_activities)
+    months_elapsed = max(1, now.month)
+    ytd_average = {key: round(value / months_elapsed, 2) if isinstance(value, (int, float)) else value for key, value in ytd_summary.items()}
+    insights = build_rule_based_insights(current_month_summary, previous_month_summary, ytd_average)
 
     return {
         "generated_at": now.isoformat(),
@@ -435,8 +451,9 @@ def stats_dashboard(db: Session = Depends(get_db)):
         "current_week": {"period": {"week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}", "from": current_week_start.isoformat(), "to": current_week_end.isoformat()}, **summarize_activities(current_week_activities)},
         "rolling_7_days": {"period": {"days": 7, "from": (now - timedelta(days=7)).isoformat(), "to": now.isoformat()}, **summarize_activities(rolling_7_activities)},
         "rolling_30_days": {"period": {"days": 30, "from": (now - timedelta(days=30)).isoformat(), "to": now.isoformat()}, **summarize_activities(rolling_30_activities)},
-        "current_month": {"period": {"month": current_month_start.strftime("%Y-%m"), "from": current_month_start.isoformat(), "to": now.isoformat()}, **summarize_activities(current_month_activities)},
-        "year_to_date": {"period": {"from": year_start.isoformat(), "to": now.isoformat()}, **summarize_activities(ytd_activities)},
+        "current_month": {"period": {"month": current_month_start.strftime("%Y-%m"), "from": current_month_start.isoformat(), "to": now.isoformat()}, **current_month_summary},
+        "year_to_date": {"period": {"from": year_start.isoformat(), "to": now.isoformat()}, **ytd_summary},
+        "training_load_insight": pick_training_load_insight(insights),
     }
 
 
