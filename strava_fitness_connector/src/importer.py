@@ -98,7 +98,19 @@ class ActivityImporter:
         if latest_epoch is None:
             return None
 
-        return max(0, latest_epoch - overlap_seconds)
+        now_epoch = int(time.time())
+        calculated_after = max(0, latest_epoch - overlap_seconds)
+        maximum_safe_after = max(0, now_epoch - overlap_seconds)
+
+        if calculated_after > maximum_safe_after:
+            print(
+                "[SYNC WARNING] Future activity timestamp detected "
+                f"(latest_start_date={latest_start_date}, calculated_after={calculated_after}). "
+                f"Using safe after={maximum_safe_after}."
+            )
+            return maximum_safe_after
+
+        return calculated_after
 
     def _update_sync_state_from_db(self) -> None:
         sync_state = self.db.get(SyncState, 1)
