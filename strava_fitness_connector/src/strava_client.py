@@ -18,6 +18,24 @@ def build_redirect_uri() -> str:
     return f"{base_url}/auth/callback"
 
 
+def log_strava_error(response: httpx.Response, operation: str, scope: str | None = None) -> None:
+    try:
+        response_body = response.json()
+    except ValueError:
+        response_body = response.text
+
+    print(
+        "[STRAVA API ERROR] "
+        f"operation={operation} "
+        f"status={response.status_code} "
+        f"url={response.request.url} "
+        f"scope={scope or 'unknown'} "
+        f"rate_limit_limit={response.headers.get('X-RateLimit-Limit', 'unknown')} "
+        f"rate_limit_usage={response.headers.get('X-RateLimit-Usage', 'unknown')} "
+        f"body={response_body}"
+    )
+
+
 class StravaClient:
     def __init__(self, db: Session):
         self.db = db
@@ -46,6 +64,8 @@ class StravaClient:
             },
             timeout=30.0,
         )
+        if response.is_error:
+            log_strava_error(response, "exchange_code_for_token", settings.strava_scopes)
         response.raise_for_status()
         return response.json()
 
@@ -60,6 +80,8 @@ class StravaClient:
             },
             timeout=30.0,
         )
+        if response.is_error:
+            log_strava_error(response, "refresh_access_token")
         response.raise_for_status()
         return response.json()
 
@@ -125,16 +147,20 @@ class StravaClient:
         return token.access_token
 
     def get_logged_in_athlete(self, athlete_id: int) -> dict[str, Any]:
+        token = self.db.get(OAuthToken, athlete_id)
         access_token = self.get_valid_access_token(athlete_id)
         response = httpx.get(
             f"{STRAVA_API_BASE}/athlete",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=30.0,
         )
+        if response.is_error:
+            log_strava_error(response, "get_logged_in_athlete", token.scope if token else None)
         response.raise_for_status()
         return response.json()
 
     def list_activities(self, athlete_id: int, page: int = 1, per_page: int = 50, after: int | None = None) -> list[dict[str, Any]]:
+        token = self.db.get(OAuthToken, athlete_id)
         access_token = self.get_valid_access_token(athlete_id)
         params: dict[str, Any] = {"page": page, "per_page": per_page}
         if after is not None:
@@ -146,5 +172,7 @@ class StravaClient:
             params=params,
             timeout=60.0,
         )
+        if response.is_error:
+            log_strava_error(response, "list_activities", token.scope if token else None)
         response.raise_for_status()
         return response.json()
