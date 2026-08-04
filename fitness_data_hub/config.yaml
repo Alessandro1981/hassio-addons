@@ -1,8 +1,8 @@
-name: Strava Fitness Connector
-version: "1.1.4"
-slug: strava_fitness_connector
-description: Personal Strava fitness data connector with sync, stats and insights
-url: "https://github.com/Alessandro1981/strava-fitness-connector"
+name: Fitness Data Hub
+version: "0.1.0"
+slug: fitness_data_hub
+description: Provider-independent fitness data hub with sync, stats and insights
+url: "https://github.com/Alessandro1981/hassio-addons"
 icon: icon.png
 logo: logo.png
 arch:
@@ -12,14 +12,15 @@ arch:
 startup: services
 boot: auto
 init: false
-panel_icon: mdi:run
-panel_title: Strava Fitness Connector
+panel_icon: mdi:chart-timeline-variant
+panel_title: Fitness Data Hub
 ports:
-  8099/tcp: 8099
+  8100/tcp: 8100
 ports_description:
-  8099/tcp: Strava Fitness Connector web interface
-webui: "http://[HOST]:[PORT:8099]/"
+  8100/tcp: Fitness Data Hub web interface
+webui: "http://[HOST]:[PORT:8100]/"
 options:
+  provider: "strava"
   app_base_url: ""
   strava_client_id: ""
   strava_client_secret: ""
@@ -27,6 +28,7 @@ options:
   sync_enabled: true
   sync_interval_seconds: 3600
 schema:
+  provider: list(strava)
   app_base_url: str
   strava_client_id: str
   strava_client_secret: password
