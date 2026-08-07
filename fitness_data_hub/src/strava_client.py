@@ -14,8 +14,7 @@ STRAVA_API_BASE = "https://www.strava.com/api/v3"
 
 
 def build_redirect_uri() -> str:
-    base_url = settings.app_base_url.rstrip("/")
-    return f"{base_url}/auth/callback"
+    return f"{settings.oauth_base_url}/auth/callback"
 
 
 def log_strava_error(response: httpx.Response, operation: str, scope: str | None = None) -> None:
