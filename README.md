@@ -4,11 +4,31 @@ A curated collection of personal Home Assistant add-ons for fitness tracking, fi
 
 ## Available add-ons
 
-This repository currently includes 2 add-ons:
+This repository currently includes 3 add-ons.
 
-### Strava Fitness Connector
+### Fitness Data Hub
+
+Provider-independent personal fitness data hub for Home Assistant.
+
+Features:
+- Strava provider (current)
+- Activity import and incremental sync
+- Athlete information
+- Weekly, monthly and YTD statistics
+- Estimated training load and fitness insights
+- REST API for Home Assistant dashboards and sensors
+- Architecture designed for additional fitness data providers
+
+Source repository / Home Assistant catalog:
+https://github.com/Alessandro1981/hassio-addons/tree/main/fitness_data_hub
+
+---
+
+### Strava Fitness Connector (Legacy)
 
 Personal Strava fitness data connector with sync, stats and insights.
+
+This add-on is retained for backward compatibility. New fitness development continues in **Fitness Data Hub**.
 
 Features:
 - Strava OAuth authentication
