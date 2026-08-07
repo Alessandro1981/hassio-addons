@@ -24,6 +24,7 @@ def load_hassio_options() -> dict[str, Any]:
 class Settings(BaseSettings):
     app_name: str = "Fitness Data Hub"
     app_base_url: str = "http://localhost:8100"
+    public_base_url: str = ""
     database_url: str = "sqlite:///./data/fitness_data_hub.db"
     provider: str = "strava"
     strava_client_id: str = ""
@@ -35,6 +36,10 @@ class Settings(BaseSettings):
     is_hassio: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    @property
+    def oauth_base_url(self) -> str:
+        return (self.public_base_url or self.app_base_url).rstrip("/")
 
 
 def build_settings() -> Settings:
@@ -48,6 +53,7 @@ def build_settings() -> Settings:
     settings.database_url = "sqlite:////data/fitness_data_hub.db"
     settings.provider = str(options.get("provider") or settings.provider)
     settings.app_base_url = options.get("app_base_url") or settings.app_base_url
+    settings.public_base_url = str(options.get("public_base_url") or "").strip()
     settings.strava_client_id = str(options.get("strava_client_id") or "")
     settings.strava_client_secret = str(options.get("strava_client_secret") or "")
     settings.strava_redirect_uri = options.get("strava_redirect_uri") or settings.strava_redirect_uri
