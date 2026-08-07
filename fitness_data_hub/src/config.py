@@ -22,12 +22,13 @@ def load_hassio_options() -> dict[str, Any]:
 
 
 class Settings(BaseSettings):
-    app_name: str = "Strava Fitness Connector"
-    app_base_url: str = "http://localhost:8000"
-    database_url: str = "sqlite:///./data/strava_phase1.db"
+    app_name: str = "Fitness Data Hub"
+    app_base_url: str = "http://localhost:8100"
+    database_url: str = "sqlite:///./data/fitness_data_hub.db"
+    provider: str = "strava"
     strava_client_id: str = ""
     strava_client_secret: str = ""
-    strava_redirect_uri: str = "http://localhost:8000/auth/callback"
+    strava_redirect_uri: str = "http://localhost:8100/auth/callback"
     strava_scopes: str = "read,activity:read_all,profile:read_all"
     sync_interval_seconds: int = 3600
     sync_enabled: bool = True
@@ -44,7 +45,8 @@ def build_settings() -> Settings:
         return settings
 
     settings.is_hassio = True
-    settings.database_url = "sqlite:////data/strava_phase1.db"
+    settings.database_url = "sqlite:////data/fitness_data_hub.db"
+    settings.provider = str(options.get("provider") or settings.provider)
     settings.app_base_url = options.get("app_base_url") or settings.app_base_url
     settings.strava_client_id = str(options.get("strava_client_id") or "")
     settings.strava_client_secret = str(options.get("strava_client_secret") or "")
