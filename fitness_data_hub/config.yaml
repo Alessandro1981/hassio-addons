@@ -1,5 +1,5 @@
 name: Fitness Data Hub
-version: "0.1.0"
+version: "0.1.1"
 slug: fitness_data_hub
 description: Provider-independent fitness data hub with sync, stats and insights
 url: "https://github.com/Alessandro1981/hassio-addons"
@@ -22,6 +22,7 @@ webui: "http://[HOST]:[PORT:8100]/"
 options:
   provider: "strava"
   app_base_url: ""
+  public_base_url: ""
   strava_client_id: ""
   strava_client_secret: ""
   strava_scopes: "read,activity:read_all,profile:read_all"
@@ -30,6 +31,7 @@ options:
 schema:
   provider: list(strava)
   app_base_url: str
+  public_base_url: str
   strava_client_id: str
   strava_client_secret: password
   strava_scopes: str
