@@ -1,5 +1,5 @@
 name: Fitness Data Hub
-version: "0.1.1"
+version: "0.1.2"
 slug: fitness_data_hub
 description: Provider-independent fitness data hub with sync, stats and insights
 url: "https://github.com/Alessandro1981/hassio-addons"
@@ -12,12 +12,14 @@ arch:
 startup: services
 boot: auto
 init: false
+ingress: true
+ingress_port: 8100
 panel_icon: mdi:chart-timeline-variant
 panel_title: Fitness Data Hub
 ports:
   8100/tcp: 8100
 ports_description:
-  8100/tcp: Fitness Data Hub web interface
+  8100/tcp: Fitness Data Hub local web interface
 webui: "http://[HOST]:[PORT:8100]/"
 options:
   provider: "strava"
