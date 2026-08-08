@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from .models import Activity, SyncState
+from .provider_health import clear_provider_failure, notify_provider_failure
 from .providers import FitnessProvider, ProviderActivity, get_provider
 
 
@@ -23,12 +24,24 @@ class ActivityImporter:
     def _get_sync_state(self) -> SyncState | None:
         return self.db.query(SyncState).filter(SyncState.provider == self.provider.name).first()
 
+    def _list_activities(self, operation: str, **kwargs) -> list[ProviderActivity]:
+        try:
+            return self.provider.list_activities(**kwargs)
+        except Exception as error:
+            notify_provider_failure(self.provider.name, operation, error)
+            raise
+
     def import_activities(self, athlete_id: int, max_pages: int = 10, per_page: int = 50) -> tuple[int, int]:
         imported = 0
         pages = 0
 
         for page in range(1, max_pages + 1):
-            activities = self.provider.list_activities(athlete_id=athlete_id, page=page, per_page=per_page)
+            activities = self._list_activities(
+                "full activity import",
+                athlete_id=athlete_id,
+                page=page,
+                per_page=per_page,
+            )
             if not activities:
                 break
 
@@ -48,6 +61,7 @@ class ActivityImporter:
                 break
 
         self._update_sync_state_from_db()
+        clear_provider_failure(self.provider.name)
         return imported, pages
 
     def sync_incremental(self, athlete_id: int, per_page: int = 200, overlap_seconds: int = 86400) -> tuple[int, int]:
@@ -59,7 +73,8 @@ class ActivityImporter:
         page = 1
 
         while True:
-            activities = self.provider.list_activities(
+            activities = self._list_activities(
+                "incremental synchronization",
                 athlete_id=athlete_id,
                 page=page,
                 per_page=per_page,
@@ -87,6 +102,7 @@ class ActivityImporter:
             page += 1
 
         self._update_sync_state_from_db()
+        clear_provider_failure(self.provider.name)
         return imported, pages
 
     def _calculate_after_timestamp(self, sync_state: SyncState | None, overlap_seconds: int) -> int | None:
