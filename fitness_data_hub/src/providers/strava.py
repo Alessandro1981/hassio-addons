@@ -2,6 +2,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..notifier import notify_provider_failure
 from ..strava_client import StravaClient
 from .base import FitnessProvider
 from .models import ProviderActivity, ProviderAthlete
@@ -18,24 +19,32 @@ class StravaProvider(FitnessProvider):
         self.client = StravaClient(db)
 
     def build_authorize_url(self) -> str:
-        return self.client.build_authorize_url()
+        try:
+            return self.client.build_authorize_url()
+        except Exception as error:
+            notify_provider_failure(self.name, "authorization_start", error)
+            raise
 
     def complete_authorization(self, code: str, scope: str | None = None) -> ProviderAthlete:
-        payload = self.client.exchange_code_for_token(code)
-        athlete = self.client.upsert_token_payload(payload, accepted_scope=scope)
-        athlete_data = payload.get("athlete", {})
-        return ProviderAthlete(
-            id=athlete.id,
-            username=athlete.username,
-            firstname=athlete.firstname,
-            lastname=athlete.lastname,
-            city=athlete.city,
-            state=athlete.state,
-            country=athlete.country,
-            profile_medium=athlete.profile_medium,
-            profile=athlete.profile,
-            raw_data=athlete_data,
-        )
+        try:
+            payload = self.client.exchange_code_for_token(code)
+            athlete = self.client.upsert_token_payload(payload, accepted_scope=scope)
+            athlete_data = payload.get("athlete", {})
+            return ProviderAthlete(
+                id=athlete.id,
+                username=athlete.username,
+                firstname=athlete.firstname,
+                lastname=athlete.lastname,
+                city=athlete.city,
+                state=athlete.state,
+                country=athlete.country,
+                profile_medium=athlete.profile_medium,
+                profile=athlete.profile,
+                raw_data=athlete_data,
+            )
+        except Exception as error:
+            notify_provider_failure(self.name, "authorization_callback", error)
+            raise
 
     def list_activities(
         self,
@@ -44,13 +53,17 @@ class StravaProvider(FitnessProvider):
         per_page: int = 50,
         after: int | None = None,
     ) -> list[ProviderActivity]:
-        raw_activities = self.client.list_activities(
-            athlete_id=athlete_id,
-            page=page,
-            per_page=per_page,
-            after=after,
-        )
-        return [self._normalize_activity(item) for item in raw_activities]
+        try:
+            raw_activities = self.client.list_activities(
+                athlete_id=athlete_id,
+                page=page,
+                per_page=per_page,
+                after=after,
+            )
+            return [self._normalize_activity(item) for item in raw_activities]
+        except Exception as error:
+            notify_provider_failure(self.name, "activity_sync", error)
+            raise
 
     @staticmethod
     def _normalize_activity(item: dict[str, Any]) -> ProviderActivity:
