@@ -1,12 +1,11 @@
 import json
 import time
 from datetime import datetime, timezone
-from typing import Any
 
 from sqlalchemy.orm import Session
 
 from .models import Activity, SyncState
-from .providers import FitnessProvider, get_provider
+from .providers import FitnessProvider, ProviderActivity, get_provider
 
 
 class ActivityImporter:
@@ -24,9 +23,9 @@ class ActivityImporter:
                 break
 
             for item in activities:
-                activity = self.db.get(Activity, item["id"])
+                activity = self.db.get(Activity, item.id)
                 if activity is None:
-                    activity = Activity(id=item["id"], athlete_id=athlete_id)
+                    activity = Activity(id=item.id, athlete_id=athlete_id)
                     self.db.add(activity)
                     imported += 1
 
@@ -63,9 +62,9 @@ class ActivityImporter:
                 break
 
             for item in activities:
-                activity = self.db.get(Activity, item["id"])
+                activity = self.db.get(Activity, item.id)
                 if activity is None:
-                    activity = Activity(id=item["id"], athlete_id=athlete_id)
+                    activity = Activity(id=item.id, athlete_id=athlete_id)
                     self.db.add(activity)
                     imported += 1
 
@@ -133,25 +132,25 @@ class ActivityImporter:
             return None
 
     @staticmethod
-    def _map_activity(activity: Activity, item: dict[str, Any]) -> None:
-        activity.name = item.get("name")
-        activity.sport_type = item.get("sport_type")
-        activity.type = item.get("type")
-        activity.start_date = item.get("start_date")
-        activity.timezone = item.get("timezone")
-        activity.distance = item.get("distance")
-        activity.moving_time = item.get("moving_time")
-        activity.elapsed_time = item.get("elapsed_time")
-        activity.total_elevation_gain = item.get("total_elevation_gain")
-        activity.average_speed = item.get("average_speed")
-        activity.max_speed = item.get("max_speed")
-        activity.average_heartrate = item.get("average_heartrate")
-        activity.max_heartrate = item.get("max_heartrate")
-        activity.average_cadence = item.get("average_cadence")
-        activity.average_watts = item.get("average_watts")
-        activity.kilojoules = item.get("kilojoules")
-        activity.trainer = item.get("trainer")
-        activity.commute = item.get("commute")
-        activity.manual = item.get("manual")
-        activity.private = item.get("private")
-        activity.raw_json = json.dumps(item, ensure_ascii=False)
+    def _map_activity(activity: Activity, item: ProviderActivity) -> None:
+        activity.name = item.name
+        activity.sport_type = item.sport_type
+        activity.type = item.activity_type
+        activity.start_date = item.start_date
+        activity.timezone = item.timezone
+        activity.distance = item.distance
+        activity.moving_time = item.moving_time
+        activity.elapsed_time = item.elapsed_time
+        activity.total_elevation_gain = item.total_elevation_gain
+        activity.average_speed = item.average_speed
+        activity.max_speed = item.max_speed
+        activity.average_heartrate = item.average_heartrate
+        activity.max_heartrate = item.max_heartrate
+        activity.average_cadence = item.average_cadence
+        activity.average_watts = item.average_watts
+        activity.kilojoules = item.kilojoules
+        activity.trainer = item.trainer
+        activity.commute = item.commute
+        activity.manual = item.manual
+        activity.private = item.private
+        activity.raw_json = json.dumps(item.raw_data, ensure_ascii=False)
