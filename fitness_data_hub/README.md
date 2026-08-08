@@ -121,12 +121,6 @@ public_base_url = https://<tailscale-device>.<tailnet>.ts.net:8443
 
 Do not append `/auth/callback` to `public_base_url`; Fitness Data Hub builds the callback path itself.
 
-For the validated installation used during development, the value is:
-
-```text
-https://homeassistant.taildd4425.ts.net:8443
-```
-
 `app_base_url` remains the internal/direct application URL fallback and is separate from the public OAuth URL.
 
 ### Configure the Strava application
@@ -180,17 +174,50 @@ URL settings:
 
 ## Provider architecture
 
-Fitness Data Hub is being developed so that provider-specific data acquisition is separated from storage, analytics, statistics and Home Assistant integration.
+Provider separation has started in version 0.2.1.
 
-Current:
+The activity importer no longer talks directly to the Strava client. It now depends on a provider contract and obtains the configured provider through a factory.
 
-`Strava -> Fitness Data Hub -> Home Assistant`
+Current structure:
 
-Planned:
+```text
+src/providers/
+  base.py       -> FitnessProvider contract
+  factory.py    -> provider selection from configuration
+  strava.py     -> StravaProvider adapter
 
-`Strava / FIT / other providers -> Fitness Data Hub -> Home Assistant`
+ActivityImporter
+      |
+      v
+FitnessProvider
+      |
+      +--> StravaProvider
+                |
+                +--> StravaClient
+```
+
+This is intentionally an incremental refactor. OAuth/token handling still lives in `StravaClient` for now, while activity acquisition has already been detached from Strava-specific code.
+
+Provider capabilities are represented explicitly. For example, Strava currently declares that it requires OAuth and a public callback. This will allow future providers to have different setup requirements without making Tailscale a global prerequisite for Fitness Data Hub.
+
+Next separation steps:
+
+1. move authentication/token operations behind the provider contract;
+2. define provider-independent athlete and activity payloads;
+3. remove Strava-specific naming from core/import logic;
+4. add a second provider to validate the abstraction.
+
+Target architecture:
+
+```text
+Provider -> Normalized activity/athlete -> Database -> Analytics -> REST API -> Home Assistant
+```
 
 ## Versions
+
+### 0.2.1
+
+Starts the provider abstraction. Adds the `FitnessProvider` contract, provider factory and `StravaProvider` adapter. `ActivityImporter` now depends on the provider interface instead of directly instantiating `StravaClient`. No intended functional change to the existing Strava flow.
 
 ### 0.2.0
 
