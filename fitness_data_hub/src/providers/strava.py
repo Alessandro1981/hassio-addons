@@ -7,11 +7,11 @@ from .base import FitnessProvider
 
 
 class StravaProvider(FitnessProvider):
-    """Strava implementation of the activity provider contract.
+    """Strava provider implementation.
 
-    OAuth and HTTP details still live in StravaClient for now. This adapter is
-    the first separation step: the importer no longer depends directly on
-    Strava-specific code.
+    Provider-specific OAuth, token refresh and HTTP behavior remain implemented
+    by StravaClient, but the rest of Fitness Data Hub now reaches them only
+    through this adapter.
     """
 
     name = "strava"
@@ -20,6 +20,13 @@ class StravaProvider(FitnessProvider):
 
     def __init__(self, db: Session):
         self.client = StravaClient(db)
+
+    def build_authorize_url(self) -> str:
+        return self.client.build_authorize_url()
+
+    def complete_authorization(self, code: str, scope: str | None = None) -> Any:
+        payload = self.client.exchange_code_for_token(code)
+        return self.client.upsert_token_payload(payload, accepted_scope=scope)
 
     def list_activities(
         self,
