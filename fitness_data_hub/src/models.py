@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -37,8 +37,11 @@ class OAuthToken(Base):
 
 class Activity(Base):
     __tablename__ = "activities"
+    __table_args__ = (UniqueConstraint("provider", "external_id", name="uq_activities_provider_external_id"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="strava", index=True)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     athlete_id: Mapped[int] = mapped_column(Integer, index=True)
     name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sport_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
@@ -67,8 +70,10 @@ class Activity(Base):
 
 class SyncState(Base):
     __tablename__ = "sync_state"
+    __table_args__ = (UniqueConstraint("provider", name="uq_sync_state_provider"),)
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="strava", index=True)
     last_sync_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_activity_start_date: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
