@@ -6,15 +6,17 @@ Fitness Data Hub is a Home Assistant add-on for collecting, storing and analysin
 
 - Strava
 
-Future versions will introduce additional providers while keeping the dashboard, statistics and insights independent from the source of the activity data.
+The architecture is being evolved so that provider-specific authentication and acquisition remain isolated from persistence, analytics, statistics, insights and Home Assistant integration.
 
 ## Features
 
 - Provider-based authentication and activity acquisition
 - Provider-independent normalized activity and athlete payloads
+- Provider-aware activity, athlete and synchronization persistence
 - Strava OAuth authentication
-- Activity import and incremental sync
-- Automatic background sync
+- Activity import and incremental synchronization
+- Automatic background synchronization
+- Home Assistant persistent notifications when provider connection/sync fails
 - Athlete information
 - Weekly and monthly statistics
 - Year-to-date statistics by activity type
@@ -22,13 +24,55 @@ Future versions will introduce additional providers while keeping the dashboard,
 - Rule-based fitness insights
 - REST API for Home Assistant dashboards and sensors
 - Local SQLite storage
-- Home Assistant Ingress support for local and Nabu Casa remote access
+- Home Assistant Ingress support
+
+## Provider health notifications
+
+From version **0.2.6**, Fitness Data Hub reports provider failures directly through Home Assistant persistent notifications.
+
+A provider problem notification contains:
+
+```text
+Fitness Data Hub - provider problem
+
+Provider: strava
+Operation: incremental synchronization
+Symptom: HTTP 403 Forbidden: {...}
+```
+
+The same notification ID is reused for subsequent failures from the same provider, avoiding notification spam. A successful provider authentication or synchronization dismisses the active provider-problem notification automatically.
+
+Failures covered include:
+
+- OAuth configuration/authentication failures;
+- token refresh failures;
+- provider connection/API errors encountered during synchronization;
+- full import failures;
+- incremental synchronization failures.
+
+Provider error reporting is best-effort: failure to create a Home Assistant notification never replaces or hides the original provider exception. The add-on uses the Home Assistant Core API through the Supervisor proxy and therefore requires `homeassistant_api: true`.
+
+## Provider-aware persistence
+
+Provider identity is no longer implicit in activity records.
+
+Activities are identified by the combination:
+
+```text
+provider + external_id
+```
+
+Synchronization state is stored independently per provider. Athlete records also carry their source `provider` and `external_id`.
+
+Existing databases are migrated automatically and existing records are backfilled as `strava`, preserving current installations. The migration is additive and idempotent.
+
+This prepares the database for multiple providers without assuming that source IDs are globally unique.
 
 ## Prerequisite: public OAuth callback
 
-Fitness Data Hub can be opened from Home Assistant through Ingress, including through Nabu Casa, but provider OAuth callbacks must reach the add-on directly through a stable public HTTPS URL. Home Assistant Ingress/Nabu Casa is therefore not used as the Strava OAuth callback endpoint.
+Fitness Data Hub can be opened from Home Assistant through Ingress, including through Nabu Casa, but providers such as Strava require an OAuth callback that is directly reachable through a stable public HTTPS URL.
 
-The validated setup for Fitness Data Hub uses **Tailscale Funnel** to expose only Fitness Data Hub port `8100` over HTTPS. Tailscale Funnel is therefore a prerequisite for the current Strava OAuth setup unless you provide another equivalent stable public HTTPS reverse proxy yourself.
+The validated Strava setup uses **Tailscale Funnel** to expose only Fitness Data Hub port `8100` over HTTPS. Tailscale Funnel is therefore a prerequisite for the current Strava OAuth setup unless another equivalent stable HTTPS reverse proxy is provided.
 
 Validated architecture:
 
@@ -50,45 +94,29 @@ Strava OAuth / Internet
 
 ### Tailscale requirements
 
-Before configuring Funnel:
-
 1. Install and authenticate the Tailscale Home Assistant add-on.
-2. In the Tailscale admin console, enable **MagicDNS**.
-3. Enable **HTTPS Certificates** for the tailnet.
-4. Enable/approve **Funnel** for the tailnet when prompted.
-5. Keep `Share Home Assistant with Serve or Funnel` set to **disabled** if the intention is to expose only Fitness Data Hub.
-6. Fitness Data Hub must expose port `8100` on the Home Assistant host and be reachable over plain HTTP on the local network.
+2. Enable MagicDNS in Tailscale.
+3. Enable HTTPS certificates for the tailnet.
+4. Enable/approve Funnel when requested.
+5. Keep `Share Home Assistant with Serve or Funnel` disabled when only Fitness Data Hub should be published.
+6. Ensure Fitness Data Hub port `8100` is reachable locally.
 
-Tailscale Funnel accepts public HTTPS listeners on ports `443`, `8443`, or `10000`. This project uses **8443** so that the endpoint is dedicated to Fitness Data Hub.
+The validated public listener uses port `8443`.
 
-### Configure the Fitness Data Hub Funnel
+### Configure Funnel
 
-The Home Assistant Tailscale add-on UI can publish Home Assistant itself, but it does not provide a UI option for publishing an arbitrary second add-on. Configure the Fitness Data Hub Funnel once from the Tailscale container CLI.
-
-Install/open **Advanced SSH & Web Terminal** and temporarily disable its Protection Mode so that Docker is accessible. Then locate and enter the Tailscale container:
+Open Advanced SSH & Web Terminal and temporarily disable Protection Mode so Docker is available. Locate and enter the Tailscale container:
 
 ```bash
 docker ps --format "table {{.ID}}\t{{.Names}}\t{{.Image}}" | grep -i tailscale
 docker exec -it $(docker ps -q -f name=tailscale) /bin/bash
 ```
 
-Inside the Tailscale container, the CLI supplied by this add-on is available as `/opt/tailscale`.
-
-Check connectivity:
+Inside the Tailscale container:
 
 ```bash
 /opt/tailscale status
-```
-
-Create the persistent Funnel, replacing the local Home Assistant address if necessary:
-
-```bash
 /opt/tailscale funnel --bg --https=8443 --set-path=/ http://192.168.1.242:8100
-```
-
-Check the result:
-
-```bash
 /opt/tailscale funnel status
 ```
 
@@ -99,19 +127,17 @@ https://<tailscale-device>.<tailnet>.ts.net:8443 (Funnel on)
 |-- / proxy http://192.168.1.242:8100
 ```
 
-The `--bg` configuration is persistent across Tailscale/device restarts. After the Funnel is configured, re-enable Protection Mode on Advanced SSH & Web Terminal.
+After configuration, re-enable Protection Mode.
 
 ### Validate the public endpoint
 
-From a device outside the Home Assistant LAN, open:
+From outside the Home Assistant LAN open:
 
 ```text
 https://<tailscale-device>.<tailnet>.ts.net:8443/health
 ```
 
-Fitness Data Hub must return a successful health response before OAuth is configured.
-
-New Funnel DNS records can take several minutes to become publicly resolvable. If the browser reports `NXDOMAIN`, verify public DNS resolution and retry after propagation.
+The endpoint must return a successful health response before OAuth is configured. New Funnel DNS records can take several minutes to become publicly resolvable.
 
 ### Configure Fitness Data Hub
 
@@ -121,134 +147,90 @@ Set:
 public_base_url = https://<tailscale-device>.<tailnet>.ts.net:8443
 ```
 
-Do not append `/auth/callback` to `public_base_url`; Fitness Data Hub builds the callback path itself.
+Do not append `/auth/callback`; Fitness Data Hub builds the callback path itself.
 
-`app_base_url` remains the internal/direct application URL fallback and is separate from the public OAuth URL.
+### Configure Strava
 
-### Configure the Strava application
-
-In the Strava API application set **Authorization Callback Domain** to the domain only:
+Set **Authorization Callback Domain** to the domain only:
 
 ```text
 <tailscale-device>.<tailnet>.ts.net
 ```
 
-Do not include `https://`, the port, a slash, or `/auth/callback` in this Strava field.
+Do not include `https://`, the port or `/auth/callback`.
 
-Fitness Data Hub will use the complete callback URL:
+Fitness Data Hub will use:
 
 ```text
 https://<tailscale-device>.<tailnet>.ts.net:8443/auth/callback
 ```
 
-### OAuth and Home Assistant Ingress
-
-External identity-provider login pages should not be embedded in the Home Assistant Ingress iframe. When Fitness Data Hub needs initial provider authentication from Ingress, it presents a provider connection page that opens the external OAuth flow outside the iframe. After authentication, the Home Assistant UI can continue to use Ingress normally.
+External authentication is opened outside the Home Assistant Ingress iframe.
 
 ## Access
 
-The add-on supports Home Assistant Ingress and can therefore be opened from the Home Assistant UI, including through Nabu Casa Remote UI.
-
-For local debugging and REST access, port `8100` remains exposed.
-
-Useful endpoints include:
+Useful endpoints:
 
 - `/health`
 - `/docs`
 - `/stats/dashboard`
+- `/sync/incremental`
 
-## Configuration
-
-Select the fitness data provider and configure its credentials. The current release supports Strava only.
-
-Required Strava settings:
-
-- Strava Client ID
-- Strava Client Secret
-- Strava scopes
-
-URL settings:
-
-- `app_base_url`: internal/direct application URL used as a fallback
-- `public_base_url`: externally reachable base URL used to build the OAuth callback URL
-
-`public_base_url` is intentionally separate from Home Assistant Ingress. Ingress is suitable for accessing the add-on UI through Home Assistant/Nabu Casa, while OAuth providers such as Strava require a stable callback URL that they can redirect to directly.
+Port `8100` remains exposed for local REST access.
 
 ## Provider architecture
-
-Provider separation started in version 0.2.1, authentication moved behind the provider boundary in 0.2.2, and normalized provider payloads were introduced in 0.2.3.
 
 Current structure:
 
 ```text
 src/providers/
   base.py       -> FitnessProvider contract
-  factory.py    -> provider selection from configuration
+  factory.py    -> provider selection
   models.py     -> ProviderActivity / ProviderAthlete normalized payloads
-  strava.py     -> StravaProvider adapter and Strava-to-core normalization
+  strava.py     -> Strava adapter and normalization
 
-FastAPI auth routes ----+
-                        |
-ActivityImporter -------+--> FitnessProvider
-                              |
-                              +--> StravaProvider
-                                      |
-                                      +--> StravaClient
+Provider API
+    |
+    v
+Provider adapter
+    |
+    v
+Normalized payloads
+    |
+    v
+Provider-aware persistence
+    |
+    +--> Analytics / Insights / REST API / Home Assistant
 ```
 
-The application core no longer consumes Strava JSON directly. `StravaProvider` translates provider-specific payloads into `ProviderActivity` and `ProviderAthlete` before they cross the provider boundary. `ActivityImporter` now persists normalized activity fields rather than looking up Strava dictionary keys.
-
-This creates a stable contract for future providers: each provider is responsible for mapping its own field names and payload shape into the Fitness Data Hub model. Raw provider data is still retained in `raw_json` for diagnostics and future enrichment.
-
-`StravaClient` remains as a Strava-specific implementation detail responsible for Strava HTTP calls, token refresh and token persistence. Provider capabilities are explicit: Strava declares that it requires OAuth and a public callback, while future providers can expose different requirements.
-
-Next separation steps:
-
-1. move provider-specific token/storage assumptions out of the shared database model;
-2. remove remaining Strava-specific naming from persistence/authentication internals;
-3. introduce provider/source identifiers in persisted athlete and activity records;
-4. add a second provider to validate the abstraction end-to-end.
-
-Target architecture:
-
-```text
-Provider -> Normalized activity/athlete -> Database -> Analytics -> REST API -> Home Assistant
-```
+The application core no longer consumes Strava activity JSON directly. Provider-specific payloads are normalized at the provider boundary before entering shared importer and analytics logic.
 
 ## Versions
 
+### 0.2.6
+
+Completes the current provider-persistence step and introduces provider health notifications. Athlete records now include provider/external identity, existing SQLite installations are migrated and backfilled automatically, and synchronization/import failures create a Home Assistant persistent notification containing the provider, failed operation and symptom. Successful authentication or synchronization clears the notification.
+
+### 0.2.5
+
+Enables access to the Home Assistant Core API from the add-on in preparation for provider health notifications.
+
+### 0.2.4
+
+Introduces provider-aware activity and synchronization persistence using `provider + external_id` and per-provider sync state, together with automatic migration of existing Strava data.
+
 ### 0.2.3
 
-Introduces provider-independent `ProviderActivity` and `ProviderAthlete` payloads. Strava responses are now normalized inside `StravaProvider`, and the shared importer consumes normalized objects rather than Strava JSON dictionaries. This moves the provider-specific field mapping to the provider boundary while preserving raw source data for diagnostics.
+Introduces provider-independent `ProviderActivity` and `ProviderAthlete` payloads. Strava responses are normalized inside `StravaProvider` before crossing the provider boundary.
 
 ### 0.2.2
 
-Moves the OAuth lifecycle behind the `FitnessProvider` contract. FastAPI no longer imports or instantiates `StravaClient`; `/auth/login` and `/auth/callback` resolve the configured provider through the provider factory. The Ingress connection page is also provider-aware. Strava behavior remains implemented by `StravaProvider` delegating to the proven `StravaClient` implementation.
+Moves the OAuth lifecycle behind the `FitnessProvider` contract. FastAPI no longer imports or instantiates `StravaClient` directly.
 
 ### 0.2.1
 
-Starts the provider abstraction. Adds the `FitnessProvider` contract, provider factory and `StravaProvider` adapter. `ActivityImporter` now depends on the provider interface instead of directly instantiating `StravaClient`. No intended functional change to the existing Strava flow.
+Starts the provider abstraction with the `FitnessProvider` contract, provider factory and `StravaProvider` adapter.
 
 ### 0.2.0
 
-Promotes the validated Strava OAuth and Home Assistant Ingress implementation to the 0.2 baseline. Adds complete documentation for the required public OAuth callback architecture, including Tailscale Funnel setup, validation, Strava callback-domain configuration and the separation between Home Assistant Ingress and external OAuth.
-
-### 0.1.4
-
-Improves initial Strava authentication when Fitness Data Hub is opened through Home Assistant Ingress by keeping the external OAuth flow outside the embedded iframe.
-
-### 0.1.3
-
-Adds dynamic Home Assistant Ingress path handling for redirects and FastAPI documentation endpoints.
-
-### 0.1.2
-
-Adds Home Assistant Ingress support while keeping port 8100 available for local REST access. Clarifies the separation between Ingress access and the external OAuth callback URL.
-
-### 0.1.1
-
-Introduces a dedicated `public_base_url` setting for OAuth callbacks.
-
-### 0.1.0
-
-Initial Fitness Data Hub release, derived from the proven Strava Fitness Connector codebase and rebranded as the foundation for provider-independent development.
+Stable documented baseline for Strava OAuth, Home Assistant Ingress and Tailscale Funnel callback setup.
