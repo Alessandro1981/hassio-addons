@@ -1,5 +1,5 @@
 name: Fitness Data Hub
-version: "0.2.4"
+version: "0.2.5"
 slug: fitness_data_hub
 description: Provider-independent fitness data hub with sync, stats and insights
 url: "https://github.com/Alessandro1981/hassio-addons"
@@ -14,6 +14,7 @@ boot: auto
 init: false
 ingress: true
 ingress_port: 8100
+homeassistant_api: true
 panel_icon: mdi:chart-timeline-variant
 panel_title: Fitness Data Hub
 ports:
