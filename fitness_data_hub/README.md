@@ -10,6 +10,7 @@ Future versions will introduce additional providers while keeping the dashboard,
 
 ## Features
 
+- Provider-based authentication and activity acquisition
 - Strava OAuth authentication
 - Activity import and incremental sync
 - Automatic background sync
@@ -141,7 +142,7 @@ https://<tailscale-device>.<tailnet>.ts.net:8443/auth/callback
 
 ### OAuth and Home Assistant Ingress
 
-External identity-provider login pages should not be embedded in the Home Assistant Ingress iframe. When Fitness Data Hub needs initial Strava authentication from Ingress, it presents a Connect Strava page that opens the external OAuth flow outside the iframe. After authentication, the Home Assistant UI can continue to use Ingress normally.
+External identity-provider login pages should not be embedded in the Home Assistant Ingress iframe. When Fitness Data Hub needs initial provider authentication from Ingress, it presents a provider connection page that opens the external OAuth flow outside the iframe. After authentication, the Home Assistant UI can continue to use Ingress normally.
 
 ## Access
 
@@ -174,9 +175,7 @@ URL settings:
 
 ## Provider architecture
 
-Provider separation has started in version 0.2.1.
-
-The activity importer no longer talks directly to the Strava client. It now depends on a provider contract and obtains the configured provider through a factory.
+Provider separation started in version 0.2.1 and authentication was moved behind the provider boundary in 0.2.2.
 
 Current structure:
 
@@ -186,25 +185,26 @@ src/providers/
   factory.py    -> provider selection from configuration
   strava.py     -> StravaProvider adapter
 
-ActivityImporter
-      |
-      v
-FitnessProvider
-      |
-      +--> StravaProvider
-                |
-                +--> StravaClient
+FastAPI auth routes ----+
+                        |
+ActivityImporter -------+--> FitnessProvider
+                              |
+                              +--> StravaProvider
+                                      |
+                                      +--> StravaClient
 ```
 
-This is intentionally an incremental refactor. OAuth/token handling still lives in `StravaClient` for now, while activity acquisition has already been detached from Strava-specific code.
+The application core no longer imports `StravaClient`. Both activity acquisition and the OAuth authorization lifecycle are reached through `FitnessProvider`.
 
-Provider capabilities are represented explicitly. For example, Strava currently declares that it requires OAuth and a public callback. This will allow future providers to have different setup requirements without making Tailscale a global prerequisite for Fitness Data Hub.
+`StravaClient` remains as a Strava-specific implementation detail responsible for Strava HTTP calls, token refresh and token persistence. This keeps the currently proven implementation intact while moving provider-specific behavior behind the adapter boundary.
+
+Provider capabilities are explicit. Strava declares that it requires OAuth and a public callback. Future providers can use different requirements without making Tailscale a global prerequisite for Fitness Data Hub.
 
 Next separation steps:
 
-1. move authentication/token operations behind the provider contract;
-2. define provider-independent athlete and activity payloads;
-3. remove Strava-specific naming from core/import logic;
+1. define provider-independent athlete and activity payloads;
+2. move provider-specific token/storage assumptions out of the shared database model;
+3. remove remaining Strava-specific naming from core logic;
 4. add a second provider to validate the abstraction.
 
 Target architecture:
@@ -214,6 +214,10 @@ Provider -> Normalized activity/athlete -> Database -> Analytics -> REST API -> 
 ```
 
 ## Versions
+
+### 0.2.2
+
+Moves the OAuth lifecycle behind the `FitnessProvider` contract. FastAPI no longer imports or instantiates `StravaClient`; `/auth/login` and `/auth/callback` resolve the configured provider through the provider factory. The Ingress connection page is also provider-aware. Strava behavior remains implemented by `StravaProvider` delegating to the proven `StravaClient` implementation.
 
 ### 0.2.1
 
