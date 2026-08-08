@@ -11,6 +11,7 @@ Future versions will introduce additional providers while keeping the dashboard,
 ## Features
 
 - Provider-based authentication and activity acquisition
+- Provider-independent normalized activity and athlete payloads
 - Strava OAuth authentication
 - Activity import and incremental sync
 - Automatic background sync
@@ -175,7 +176,7 @@ URL settings:
 
 ## Provider architecture
 
-Provider separation started in version 0.2.1 and authentication was moved behind the provider boundary in 0.2.2.
+Provider separation started in version 0.2.1, authentication moved behind the provider boundary in 0.2.2, and normalized provider payloads were introduced in 0.2.3.
 
 Current structure:
 
@@ -183,7 +184,8 @@ Current structure:
 src/providers/
   base.py       -> FitnessProvider contract
   factory.py    -> provider selection from configuration
-  strava.py     -> StravaProvider adapter
+  models.py     -> ProviderActivity / ProviderAthlete normalized payloads
+  strava.py     -> StravaProvider adapter and Strava-to-core normalization
 
 FastAPI auth routes ----+
                         |
@@ -194,18 +196,18 @@ ActivityImporter -------+--> FitnessProvider
                                       +--> StravaClient
 ```
 
-The application core no longer imports `StravaClient`. Both activity acquisition and the OAuth authorization lifecycle are reached through `FitnessProvider`.
+The application core no longer consumes Strava JSON directly. `StravaProvider` translates provider-specific payloads into `ProviderActivity` and `ProviderAthlete` before they cross the provider boundary. `ActivityImporter` now persists normalized activity fields rather than looking up Strava dictionary keys.
 
-`StravaClient` remains as a Strava-specific implementation detail responsible for Strava HTTP calls, token refresh and token persistence. This keeps the currently proven implementation intact while moving provider-specific behavior behind the adapter boundary.
+This creates a stable contract for future providers: each provider is responsible for mapping its own field names and payload shape into the Fitness Data Hub model. Raw provider data is still retained in `raw_json` for diagnostics and future enrichment.
 
-Provider capabilities are explicit. Strava declares that it requires OAuth and a public callback. Future providers can use different requirements without making Tailscale a global prerequisite for Fitness Data Hub.
+`StravaClient` remains as a Strava-specific implementation detail responsible for Strava HTTP calls, token refresh and token persistence. Provider capabilities are explicit: Strava declares that it requires OAuth and a public callback, while future providers can expose different requirements.
 
 Next separation steps:
 
-1. define provider-independent athlete and activity payloads;
-2. move provider-specific token/storage assumptions out of the shared database model;
-3. remove remaining Strava-specific naming from core logic;
-4. add a second provider to validate the abstraction.
+1. move provider-specific token/storage assumptions out of the shared database model;
+2. remove remaining Strava-specific naming from persistence/authentication internals;
+3. introduce provider/source identifiers in persisted athlete and activity records;
+4. add a second provider to validate the abstraction end-to-end.
 
 Target architecture:
 
@@ -214,6 +216,10 @@ Provider -> Normalized activity/athlete -> Database -> Analytics -> REST API -> 
 ```
 
 ## Versions
+
+### 0.2.3
+
+Introduces provider-independent `ProviderActivity` and `ProviderAthlete` payloads. Strava responses are now normalized inside `StravaProvider`, and the shared importer consumes normalized objects rather than Strava JSON dictionaries. This moves the provider-specific field mapping to the provider boundary while preserving raw source data for diagnostics.
 
 ### 0.2.2
 
