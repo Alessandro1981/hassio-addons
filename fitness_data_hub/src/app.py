@@ -3,7 +3,7 @@ import threading
 import time
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -39,6 +39,53 @@ def app_path(request: Request, path: str) -> str:
     root_path = request.scope.get("root_path", "").rstrip("/")
     clean_path = path.lstrip("/")
     return f"{root_path}/{clean_path}" if root_path else f"/{clean_path}"
+
+
+def is_ingress_request(request: Request) -> bool:
+    return bool(request.headers.get("x-ingress-path") or request.scope.get("root_path"))
+
+
+def strava_connect_page() -> HTMLResponse:
+    public_base_url = (settings.public_base_url or "").rstrip("/")
+    if public_base_url:
+        auth_url = f"{public_base_url}/auth/login"
+        action = f'<a class="button" href="{auth_url}" target="_blank" rel="noopener noreferrer">Connect Strava</a>'
+        note = "Strava authentication opens in a new browser tab because external sign-in providers may block authentication inside Home Assistant Ingress. After authorizing Strava, return to this panel and reload it."
+    else:
+        action = '<div class="warning">Set <strong>public_base_url</strong> in the add-on configuration before connecting Strava.</div>'
+        note = "The public URL must point to Fitness Data Hub and be reachable by Strava for the OAuth callback."
+
+    html = f"""
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fitness Data Hub</title>
+  <style>
+    body {{ margin: 0; font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #111827; color: #f9fafb; }}
+    main {{ max-width: 720px; margin: 0 auto; padding: 64px 28px; }}
+    .card {{ background: #1f2937; border-radius: 18px; padding: 32px; box-shadow: 0 12px 36px rgba(0,0,0,.28); }}
+    h1 {{ margin-top: 0; font-size: 2rem; }}
+    p {{ color: #d1d5db; line-height: 1.55; }}
+    .button {{ display: inline-block; margin: 18px 0; padding: 13px 22px; border-radius: 10px; background: #fc4c02; color: white; text-decoration: none; font-weight: 700; }}
+    .warning {{ margin: 18px 0; padding: 14px; border-radius: 10px; background: #78350f; color: #fef3c7; }}
+    .small {{ font-size: .92rem; color: #9ca3af; }}
+  </style>
+</head>
+<body>
+  <main>
+    <div class="card">
+      <h1>Fitness Data Hub</h1>
+      <p>No fitness provider is authenticated yet.</p>
+      {action}
+      <p class="small">{note}</p>
+    </div>
+  </main>
+</body>
+</html>
+"""
+    return HTMLResponse(content=html)
 
 
 def normalize_activity_type(value: str | None) -> str:
@@ -99,7 +146,6 @@ def calculate_estimated_training_load(activity: Activity) -> float:
 def activity_to_dashboard_item(activity: Activity | None) -> dict | None:
     if activity is None:
         return None
-
     return {
         "id": activity.id,
         "name": activity.name,
@@ -118,7 +164,6 @@ def activity_to_dashboard_item(activity: Activity | None) -> dict | None:
 def athlete_to_dashboard_item(athlete: Athlete | None) -> dict | None:
     if athlete is None:
         return None
-
     full_name = f"{athlete.firstname or ''} {athlete.lastname or ''}".strip()
     return {
         "id": athlete.id,
@@ -151,20 +196,16 @@ def summarize_activities(activities: list[Activity]) -> dict:
         start_date = parse_strava_datetime(activity.start_date)
         if start_date:
             active_days.add(start_date.date().isoformat())
-
         distance = activity.distance or 0.0
         moving_time = activity.moving_time or 0
         elevation = activity.total_elevation_gain or 0.0
-
         total_distance += distance
         total_time += moving_time
         total_elevation += elevation
         training_load += calculate_estimated_training_load(activity)
-
         if activity.average_heartrate is not None and moving_time > 0:
             hr_weighted_sum += activity.average_heartrate * moving_time
             hr_weight_seconds += moving_time
-
         if activity_matches(activity, HIKING_TYPES):
             hiking_distance += distance
         elif activity_matches(activity, RUN_TYPES):
@@ -173,10 +214,8 @@ def summarize_activities(activities: list[Activity]) -> dict:
             bike_distance += distance
         elif activity_matches(activity, SPORT_WALK_TYPES):
             sport_walk_distance += distance
-
         if activity_matches(activity, YOGA_MEDITATION_TYPES):
             yoga_meditation_time += moving_time
-
         if activity_matches(activity, TENNIS_PADEL_TYPES):
             tennis_padel_time += moving_time
             tennis_padel_count += 1
@@ -203,12 +242,10 @@ def summarize_activities(activities: list[Activity]) -> dict:
 def load_activities_between(db: Session, start: datetime, end: datetime) -> list[Activity]:
     rows = db.query(Activity).all()
     result: list[Activity] = []
-
     for row in rows:
         start_date = parse_strava_datetime(row.start_date)
         if start_date and start <= start_date < end:
             result.append(row)
-
     return result
 
 
@@ -233,7 +270,6 @@ def add_insight(insights: list[dict], category: str, severity: str, message: str
 
 def build_rule_based_insights(current: dict, previous: dict, ytd_average: dict) -> list[dict]:
     insights: list[dict] = []
-
     load_change_prev = percentage_change(current["estimated_training_load"], previous["estimated_training_load"])
     load_change_ytd = percentage_change(current["estimated_training_load"], ytd_average["estimated_training_load"])
     distance_change_prev = percentage_change(current["total_distance_km"], previous["total_distance_km"])
@@ -272,7 +308,6 @@ def build_rule_based_insights(current: dict, previous: dict, ytd_average: dict) 
 
     if not insights:
         add_insight(insights, "summary", "info", "Non emergono variazioni forti rispetto ai riferimenti disponibili.", "Continua a monitorare volume, carico stimato e consistenza.")
-
     return insights
 
 
@@ -288,17 +323,14 @@ def background_sync():
         try:
             db_gen = get_db()
             db = next(db_gen)
-
             athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
             if athlete:
                 importer = ActivityImporter(db)
                 imported, _ = importer.sync_incremental(athlete.id)
                 print(f"[SYNC] Imported {imported} new activities")
-
             db.close()
         except Exception as e:
             print("[SYNC ERROR]", e)
-
         time.sleep(settings.sync_interval_seconds)
 
 
@@ -314,7 +346,9 @@ def start_background_sync():
 def root(request: Request, db: Session = Depends(get_db)):
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
-        return RedirectResponse(url=app_path(request, "/auth/login"))
+        if is_ingress_request(request):
+            return strava_connect_page()
+        return RedirectResponse(url="/auth/login")
     return RedirectResponse(url=app_path(request, "/docs"))
 
 
@@ -326,15 +360,13 @@ def health() -> HealthResponse:
 @app.get("/auth/login")
 def auth_login(db: Session = Depends(get_db)):
     client = StravaClient(db)
-    url = client.build_authorize_url()
-    return RedirectResponse(url=url)
+    return RedirectResponse(url=client.build_authorize_url())
 
 
 @app.get("/auth/callback")
 def auth_callback(request: Request, code: str, scope: str | None = None, db: Session = Depends(get_db)):
     if not settings.strava_client_id or not settings.strava_client_secret:
         raise HTTPException(status_code=500, detail="Missing Strava credentials in add-on configuration")
-
     client = StravaClient(db)
     payload = client.exchange_code_for_token(code)
     client.upsert_token_payload(payload, accepted_scope=scope)
@@ -346,14 +378,7 @@ def get_athlete(db: Session = Depends(get_db)):
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
         raise HTTPException(status_code=404, detail="No athlete authenticated yet")
-    return {
-        "id": athlete.id,
-        "firstname": athlete.firstname,
-        "lastname": athlete.lastname,
-        "city": athlete.city,
-        "state": athlete.state,
-        "country": athlete.country,
-    }
+    return {"id": athlete.id, "firstname": athlete.firstname, "lastname": athlete.lastname, "city": athlete.city, "state": athlete.state, "country": athlete.country}
 
 
 @app.post("/import/activities", response_model=ImportResponse)
@@ -361,7 +386,6 @@ def import_activities(max_pages: int = Query(default=10, ge=1, le=100), per_page
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
         raise HTTPException(status_code=404, detail="Authenticate first at /auth/login")
-
     importer = ActivityImporter(db)
     imported, pages = importer.import_activities(athlete_id=athlete.id, max_pages=max_pages, per_page=per_page)
     return ImportResponse(imported=imported, pages=pages)
@@ -372,18 +396,10 @@ def sync_incremental(per_page: int = Query(default=200, ge=1, le=200), overlap_s
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
         raise HTTPException(status_code=404, detail="Authenticate first at /auth/login")
-
     importer = ActivityImporter(db)
     imported, pages = importer.sync_incremental(athlete_id=athlete.id, per_page=per_page, overlap_seconds=overlap_seconds)
     sync_state = db.get(SyncState, 1)
-
-    return {
-        "message": "Incremental sync completed",
-        "imported": imported,
-        "pages": pages,
-        "last_sync_at": sync_state.last_sync_at if sync_state else None,
-        "last_activity_start_date": sync_state.last_activity_start_date if sync_state else None,
-    }
+    return {"message": "Incremental sync completed", "imported": imported, "pages": pages, "last_sync_at": sync_state.last_sync_at if sync_state else None, "last_activity_start_date": sync_state.last_activity_start_date if sync_state else None}
 
 
 @app.get("/activities")
@@ -410,7 +426,6 @@ def stats_year_to_date(db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
     ytd_activities = load_activities_between(db, year_start, now + timedelta(seconds=1))
-
     return {"period": {"from": year_start.isoformat(), "to": now.isoformat()}, **summarize_activities(ytd_activities)}
 
 
@@ -419,7 +434,6 @@ def stats_monthly(db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
     current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
-
     return {"period": {"month": current_month_start.strftime("%Y-%m"), "from": current_month_start.isoformat(), "to": now.isoformat()}, **summarize_activities(current_month_activities)}
 
 
@@ -428,7 +442,6 @@ def stats_rolling(days: int = Query(default=7, ge=1, le=365), db: Session = Depe
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days)
     activities = load_activities_between(db, start, now + timedelta(seconds=1))
-
     return {"period": {"days": days, "from": start.isoformat(), "to": now.isoformat()}, **summarize_activities(activities)}
 
 
@@ -437,14 +450,12 @@ def stats_dashboard(db: Session = Depends(get_db)):
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
         raise HTTPException(status_code=404, detail="No athlete authenticated yet")
-
     now = datetime.now(timezone.utc)
     current_week_start = datetime.combine((now - timedelta(days=now.weekday())).date(), datetime.min.time(), tzinfo=timezone.utc)
     current_week_end = current_week_start + timedelta(days=7)
     current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     previous_month_start = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc) if now.month == 1 else datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-
     latest = db.query(Activity).order_by(Activity.start_date.desc()).first()
     current_week_activities = load_activities_between(db, current_week_start, current_week_end)
     rolling_7_activities = load_activities_between(db, now - timedelta(days=7), now + timedelta(seconds=1))
@@ -452,14 +463,12 @@ def stats_dashboard(db: Session = Depends(get_db)):
     current_month_activities = load_activities_between(db, current_month_start, now + timedelta(seconds=1))
     previous_month_activities = load_activities_between(db, previous_month_start, current_month_start)
     ytd_activities = load_activities_between(db, year_start, now + timedelta(seconds=1))
-
     current_month_summary = summarize_activities(current_month_activities)
     previous_month_summary = summarize_activities(previous_month_activities)
     ytd_summary = summarize_activities(ytd_activities)
     months_elapsed = max(1, now.month)
     ytd_average = {key: round(value / months_elapsed, 2) if isinstance(value, (int, float)) else value for key, value in ytd_summary.items()}
     insights = build_rule_based_insights(current_month_summary, previous_month_summary, ytd_average)
-
     return {
         "generated_at": now.isoformat(),
         "athlete": athlete_to_dashboard_item(athlete),
@@ -479,12 +488,10 @@ def stats_weekly(db: Session = Depends(get_db)):
     current_week_start = datetime.combine((now - timedelta(days=now.weekday())).date(), datetime.min.time(), tzinfo=timezone.utc)
     current_week_end = current_week_start + timedelta(days=7)
     previous_week_start = current_week_start - timedelta(days=7)
-
     current_activities = load_activities_between(db, current_week_start, current_week_end)
     previous_activities = load_activities_between(db, previous_week_start, current_week_start)
     current_summary = summarize_activities(current_activities)
     previous_summary = summarize_activities(previous_activities)
-
     return {
         "current_week": {"week": f"{current_week_start.isocalendar().year}-W{current_week_start.isocalendar().week:02d}", "from": current_week_start.isoformat(), "to": current_week_end.isoformat(), **current_summary},
         "previous_week": {"week": f"{previous_week_start.isocalendar().year}-W{previous_week_start.isocalendar().week:02d}", "from": previous_week_start.isoformat(), "to": current_week_start.isoformat(), **previous_summary},
@@ -495,10 +502,7 @@ def stats_weekly(db: Session = Depends(get_db)):
             "activities_delta": current_summary["activities_count"] - previous_summary["activities_count"],
             "active_days_delta": current_summary["active_days"] - previous_summary["active_days"],
         },
-        "notes": {
-            "estimated_training_load": "duration_minutes multiplied by an HR-based intensity factor. It is a proxy, not the official Strava/Amazfit training load.",
-            "heart_rate_average": "time-weighted average heart rate over activities with HR data.",
-        },
+        "notes": {"estimated_training_load": "duration_minutes multiplied by an HR-based intensity factor. It is a proxy, not the official Strava/Amazfit training load.", "heart_rate_average": "time-weighted average heart rate over activities with HR data."},
     }
 
 
@@ -508,27 +512,16 @@ def insights_summary(db: Session = Depends(get_db)):
     current_month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc)
     previous_month_start = datetime(now.year - 1, 12, 1, tzinfo=timezone.utc) if now.month == 1 else datetime(now.year, now.month - 1, 1, tzinfo=timezone.utc)
     year_start = datetime(now.year, 1, 1, tzinfo=timezone.utc)
-
     current_summary = summarize_activities(load_activities_between(db, current_month_start, now + timedelta(seconds=1)))
     previous_summary = summarize_activities(load_activities_between(db, previous_month_start, current_month_start))
     ytd_summary = summarize_activities(load_activities_between(db, year_start, now + timedelta(seconds=1)))
-
     months_elapsed = max(1, now.month)
     ytd_average = {key: round(value / months_elapsed, 2) if isinstance(value, (int, float)) else value for key, value in ytd_summary.items()}
-
     return {
-        "period": {
-            "current_month": current_month_start.strftime("%Y-%m"),
-            "previous_month": previous_month_start.strftime("%Y-%m"),
-            "ytd_from": year_start.isoformat(),
-            "generated_at": now.isoformat(),
-        },
+        "period": {"current_month": current_month_start.strftime("%Y-%m"), "previous_month": previous_month_start.strftime("%Y-%m"), "ytd_from": year_start.isoformat(), "generated_at": now.isoformat()},
         "current_month": current_summary,
         "previous_month": previous_summary,
         "ytd_monthly_average": ytd_average,
         "insights": build_rule_based_insights(current_summary, previous_summary, ytd_average),
-        "notes": {
-            "method": "Rule-based insights. No AI model is used at this stage.",
-            "training_load": "Estimated from duration and average HR. It is not the official Strava/Amazfit training load.",
-        },
+        "notes": {"method": "Rule-based insights. No AI model is used at this stage.", "training_load": "Estimated from duration and average HR. It is not the official Strava/Amazfit training load."},
     }
