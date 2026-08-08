@@ -8,8 +8,11 @@ from .db import Base
 
 class Athlete(Base):
     __tablename__ = "athletes"
+    __table_args__ = (UniqueConstraint("provider", "external_id", name="uq_athletes_provider_external_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, default="strava", index=True)
+    external_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     firstname: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lastname: Mapped[str | None] = mapped_column(String(255), nullable=True)
