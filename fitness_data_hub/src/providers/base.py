@@ -1,12 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Any
+
+from .models import ProviderActivity, ProviderAthlete
 
 
 class FitnessProvider(ABC):
     """Provider contract for acquisition and authentication.
 
     Persistence, analytics and Home Assistant-facing code should depend on this
-    interface instead of importing a provider-specific client directly.
+    interface instead of importing provider-specific clients or payload shapes.
     """
 
     name: str
@@ -16,7 +17,7 @@ class FitnessProvider(ABC):
     def build_authorize_url(self) -> str:
         raise NotImplementedError(f"Provider {self.name} does not support OAuth authorization")
 
-    def complete_authorization(self, code: str, scope: str | None = None) -> Any:
+    def complete_authorization(self, code: str, scope: str | None = None) -> ProviderAthlete:
         raise NotImplementedError(f"Provider {self.name} does not support OAuth authorization")
 
     @abstractmethod
@@ -26,5 +27,5 @@ class FitnessProvider(ABC):
         page: int = 1,
         per_page: int = 50,
         after: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> list[ProviderActivity]:
         raise NotImplementedError
