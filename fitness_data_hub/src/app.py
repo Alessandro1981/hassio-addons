@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 import threading
 import time
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,22 @@ BIKE_TYPES = {"ride", "bikeride", "virtualride", "ebikeride", "mountainbikeride"
 SPORT_WALK_TYPES = {"walk", "walking", "racewalk", "sportwalk", "camminata", "camminatasportiva"}
 YOGA_MEDITATION_TYPES = {"yoga", "meditation", "meditazione"}
 TENNIS_PADEL_TYPES = {"tennis", "padel", "paddle", "racquetsport", "racketsport"}
+
+
+@app.middleware("http")
+async def home_assistant_ingress_root_path(request: Request, call_next):
+    """Make FastAPI aware of the dynamic Home Assistant Ingress prefix."""
+    ingress_path = request.headers.get("x-ingress-path", "").rstrip("/")
+    if ingress_path:
+        request.scope["root_path"] = ingress_path
+    return await call_next(request)
+
+
+def app_path(request: Request, path: str) -> str:
+    """Build a URL that works both directly and behind Home Assistant Ingress."""
+    root_path = request.scope.get("root_path", "").rstrip("/")
+    clean_path = path.lstrip("/")
+    return f"{root_path}/{clean_path}" if root_path else f"/{clean_path}"
 
 
 def normalize_activity_type(value: str | None) -> str:
@@ -295,11 +311,11 @@ def start_background_sync():
 
 
 @app.get("/")
-def root(db: Session = Depends(get_db)):
+def root(request: Request, db: Session = Depends(get_db)):
     athlete = db.query(Athlete).order_by(Athlete.id.asc()).first()
     if athlete is None:
-        return RedirectResponse(url="/auth/login")
-    return RedirectResponse(url="/docs")
+        return RedirectResponse(url=app_path(request, "/auth/login"))
+    return RedirectResponse(url=app_path(request, "/docs"))
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -315,14 +331,14 @@ def auth_login(db: Session = Depends(get_db)):
 
 
 @app.get("/auth/callback")
-def auth_callback(code: str, scope: str | None = None, db: Session = Depends(get_db)):
+def auth_callback(request: Request, code: str, scope: str | None = None, db: Session = Depends(get_db)):
     if not settings.strava_client_id or not settings.strava_client_secret:
-        raise HTTPException(status_code=500, detail="Missing Strava credentials in .env")
+        raise HTTPException(status_code=500, detail="Missing Strava credentials in add-on configuration")
 
     client = StravaClient(db)
     payload = client.exchange_code_for_token(code)
     client.upsert_token_payload(payload, accepted_scope=scope)
-    return RedirectResponse(url="/docs")
+    return RedirectResponse(url=app_path(request, "/docs"))
 
 
 @app.get("/athlete")
