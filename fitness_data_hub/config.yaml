@@ -1,5 +1,5 @@
 name: Fitness Data Hub
-version: "0.2.0"
+version: "0.2.1"
 slug: fitness_data_hub
 description: Provider-independent fitness data hub with sync, stats and insights
 url: "https://github.com/Alessandro1981/hassio-addons"
