@@ -3,15 +3,21 @@ from typing import Any
 
 
 class FitnessProvider(ABC):
-    """Provider contract for activity acquisition.
+    """Provider contract for acquisition and authentication.
 
-    Analytics, persistence and Home Assistant-facing APIs must depend on this
-    interface rather than on a provider-specific client.
+    Persistence, analytics and Home Assistant-facing code should depend on this
+    interface instead of importing a provider-specific client directly.
     """
 
     name: str
     requires_oauth: bool = False
     requires_public_callback: bool = False
+
+    def build_authorize_url(self) -> str:
+        raise NotImplementedError(f"Provider {self.name} does not support OAuth authorization")
+
+    def complete_authorization(self, code: str, scope: str | None = None) -> Any:
+        raise NotImplementedError(f"Provider {self.name} does not support OAuth authorization")
 
     @abstractmethod
     def list_activities(
