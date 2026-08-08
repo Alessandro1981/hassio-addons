@@ -13,6 +13,16 @@ class ActivityImporter:
         self.db = db
         self.provider = provider or get_provider(db)
 
+    def _find_activity(self, external_id: int | str) -> Activity | None:
+        return (
+            self.db.query(Activity)
+            .filter(Activity.provider == self.provider.name, Activity.external_id == str(external_id))
+            .first()
+        )
+
+    def _get_sync_state(self) -> SyncState | None:
+        return self.db.query(SyncState).filter(SyncState.provider == self.provider.name).first()
+
     def import_activities(self, athlete_id: int, max_pages: int = 10, per_page: int = 50) -> tuple[int, int]:
         imported = 0
         pages = 0
@@ -23,9 +33,9 @@ class ActivityImporter:
                 break
 
             for item in activities:
-                activity = self.db.get(Activity, item.id)
+                activity = self._find_activity(item.id)
                 if activity is None:
-                    activity = Activity(id=item.id, athlete_id=athlete_id)
+                    activity = Activity(provider=self.provider.name, external_id=str(item.id), athlete_id=athlete_id)
                     self.db.add(activity)
                     imported += 1
 
@@ -41,8 +51,7 @@ class ActivityImporter:
         return imported, pages
 
     def sync_incremental(self, athlete_id: int, per_page: int = 200, overlap_seconds: int = 86400) -> tuple[int, int]:
-        """Import only activities newer than the latest known activity."""
-        sync_state = self.db.get(SyncState, 1)
+        sync_state = self._get_sync_state()
         after = self._calculate_after_timestamp(sync_state=sync_state, overlap_seconds=overlap_seconds)
 
         imported = 0
@@ -62,9 +71,9 @@ class ActivityImporter:
                 break
 
             for item in activities:
-                activity = self.db.get(Activity, item.id)
+                activity = self._find_activity(item.id)
                 if activity is None:
-                    activity = Activity(id=item.id, athlete_id=athlete_id)
+                    activity = Activity(provider=self.provider.name, external_id=str(item.id), athlete_id=athlete_id)
                     self.db.add(activity)
                     imported += 1
 
@@ -84,7 +93,12 @@ class ActivityImporter:
         latest_start_date = sync_state.last_activity_start_date if sync_state else None
 
         if latest_start_date is None:
-            latest_activity = self.db.query(Activity).order_by(Activity.start_date.desc()).first()
+            latest_activity = (
+                self.db.query(Activity)
+                .filter(Activity.provider == self.provider.name)
+                .order_by(Activity.start_date.desc())
+                .first()
+            )
             latest_start_date = latest_activity.start_date if latest_activity else None
 
         latest_epoch = self._parse_datetime_to_epoch(latest_start_date)
@@ -98,7 +112,7 @@ class ActivityImporter:
         if calculated_after > maximum_safe_after:
             print(
                 "[SYNC WARNING] Future activity timestamp detected "
-                f"(latest_start_date={latest_start_date}, calculated_after={calculated_after}). "
+                f"(provider={self.provider.name}, latest_start_date={latest_start_date}, calculated_after={calculated_after}). "
                 f"Using safe after={maximum_safe_after}."
             )
             return maximum_safe_after
@@ -106,17 +120,24 @@ class ActivityImporter:
         return calculated_after
 
     def _update_sync_state_from_db(self) -> None:
-        sync_state = self.db.get(SyncState, 1)
+        sync_state = self._get_sync_state()
         if sync_state is None:
-            sync_state = SyncState(id=1)
+            sync_state = SyncState(provider=self.provider.name)
             self.db.add(sync_state)
 
-        latest_activity = self.db.query(Activity).order_by(Activity.start_date.desc()).first()
+        latest_activity = (
+            self.db.query(Activity)
+            .filter(Activity.provider == self.provider.name)
+            .order_by(Activity.start_date.desc())
+            .first()
+        )
 
         sync_state.last_sync_at = int(time.time())
         sync_state.last_activity_start_date = latest_activity.start_date if latest_activity else None
-
         self.db.commit()
+
+    def get_sync_state(self) -> SyncState | None:
+        return self._get_sync_state()
 
     @staticmethod
     def _parse_datetime_to_epoch(value: str | None) -> int | None:
