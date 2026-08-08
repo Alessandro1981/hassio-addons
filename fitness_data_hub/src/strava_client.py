@@ -7,10 +7,12 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .models import Athlete, OAuthToken
+from .provider_health import clear_provider_failure, notify_provider_failure
 
 STRAVA_OAUTH_AUTHORIZE_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_OAUTH_TOKEN_URL = "https://www.strava.com/oauth/token"
 STRAVA_API_BASE = "https://www.strava.com/api/v3"
+STRAVA_PROVIDER = "strava"
 
 
 def build_redirect_uri() -> str:
@@ -39,7 +41,23 @@ class StravaClient:
     def __init__(self, db: Session):
         self.db = db
 
+    def _find_athlete(self, external_id: int | str) -> Athlete | None:
+        return (
+            self.db.query(Athlete)
+            .filter(Athlete.provider == STRAVA_PROVIDER, Athlete.external_id == str(external_id))
+            .first()
+        )
+
     def build_authorize_url(self) -> str:
+        if not settings.strava_client_id or not settings.strava_client_secret:
+            error = ValueError("Missing Strava Client ID or Client Secret")
+            notify_provider_failure(STRAVA_PROVIDER, "OAuth configuration", error)
+            raise error
+        if not settings.oauth_base_url:
+            error = ValueError("Missing public OAuth base URL")
+            notify_provider_failure(STRAVA_PROVIDER, "OAuth configuration", error)
+            raise error
+
         query = urlencode(
             {
                 "client_id": settings.strava_client_id,
@@ -52,45 +70,63 @@ class StravaClient:
         return f"{STRAVA_OAUTH_AUTHORIZE_URL}?{query}"
 
     def exchange_code_for_token(self, code: str) -> dict[str, Any]:
-        response = httpx.post(
-            STRAVA_OAUTH_TOKEN_URL,
-            data={
-                "client_id": settings.strava_client_id,
-                "client_secret": settings.strava_client_secret,
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": build_redirect_uri(),
-            },
-            timeout=30.0,
-        )
-        if response.is_error:
-            log_strava_error(response, "exchange_code_for_token", settings.strava_scopes)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = httpx.post(
+                STRAVA_OAUTH_TOKEN_URL,
+                data={
+                    "client_id": settings.strava_client_id,
+                    "client_secret": settings.strava_client_secret,
+                    "code": code,
+                    "grant_type": "authorization_code",
+                    "redirect_uri": build_redirect_uri(),
+                },
+                timeout=30.0,
+            )
+            if response.is_error:
+                log_strava_error(response, "exchange_code_for_token", settings.strava_scopes)
+            response.raise_for_status()
+            return response.json()
+        except Exception as error:
+            notify_provider_failure(STRAVA_PROVIDER, "OAuth authorization", error)
+            raise
 
     def refresh_access_token(self, refresh_token: str) -> dict[str, Any]:
-        response = httpx.post(
-            STRAVA_OAUTH_TOKEN_URL,
-            data={
-                "client_id": settings.strava_client_id,
-                "client_secret": settings.strava_client_secret,
-                "refresh_token": refresh_token,
-                "grant_type": "refresh_token",
-            },
-            timeout=30.0,
-        )
-        if response.is_error:
-            log_strava_error(response, "refresh_access_token")
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = httpx.post(
+                STRAVA_OAUTH_TOKEN_URL,
+                data={
+                    "client_id": settings.strava_client_id,
+                    "client_secret": settings.strava_client_secret,
+                    "refresh_token": refresh_token,
+                    "grant_type": "refresh_token",
+                },
+                timeout=30.0,
+            )
+            if response.is_error:
+                log_strava_error(response, "refresh_access_token")
+            response.raise_for_status()
+            return response.json()
+        except Exception as error:
+            notify_provider_failure(STRAVA_PROVIDER, "access-token refresh", error)
+            raise
 
     def upsert_token_payload(self, payload: dict[str, Any], accepted_scope: str | None = None) -> Athlete:
         athlete_data = payload["athlete"]
-        athlete = self.db.get(Athlete, athlete_data["id"])
+        external_id = str(athlete_data["id"])
+        athlete = self._find_athlete(external_id)
         if athlete is None:
-            athlete = Athlete(id=athlete_data["id"])
+            # Preserve the existing Strava ID as internal ID for backward compatibility.
+            # Future providers can allocate their own internal IDs while being identified
+            # uniquely by provider + external_id.
+            athlete = Athlete(
+                id=athlete_data["id"],
+                provider=STRAVA_PROVIDER,
+                external_id=external_id,
+            )
             self.db.add(athlete)
 
+        athlete.provider = STRAVA_PROVIDER
+        athlete.external_id = external_id
         athlete.username = athlete_data.get("username")
         athlete.firstname = athlete_data.get("firstname")
         athlete.lastname = athlete_data.get("lastname")
@@ -100,15 +136,16 @@ class StravaClient:
         athlete.profile_medium = athlete_data.get("profile_medium")
         athlete.profile = athlete_data.get("profile")
 
-        token = self.db.get(OAuthToken, athlete_data["id"])
+        token = self.db.get(OAuthToken, athlete.id)
         if token is None:
-            token = OAuthToken(athlete_id=athlete_data["id"])
+            token = OAuthToken(athlete_id=athlete.id)
             self.db.add(token)
 
         self._map_token(token, payload, accepted_scope=accepted_scope)
 
         self.db.commit()
         self.db.refresh(athlete)
+        clear_provider_failure(STRAVA_PROVIDER)
         return athlete
 
     def update_existing_token_payload(self, athlete_id: int, payload: dict[str, Any], accepted_scope: str | None = None) -> None:
@@ -128,7 +165,12 @@ class StravaClient:
         token.scope = accepted_scope
 
     def get_primary_athlete(self) -> Athlete | None:
-        return self.db.query(Athlete).order_by(Athlete.id.asc()).first()
+        return (
+            self.db.query(Athlete)
+            .filter(Athlete.provider == STRAVA_PROVIDER)
+            .order_by(Athlete.id.asc())
+            .first()
+        )
 
     def get_valid_access_token(self, athlete_id: int) -> str:
         token = self.db.get(OAuthToken, athlete_id)
