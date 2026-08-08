@@ -6,20 +6,20 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from .models import Activity, SyncState
-from .strava_client import StravaClient
+from .providers import FitnessProvider, get_provider
 
 
 class ActivityImporter:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, provider: FitnessProvider | None = None):
         self.db = db
-        self.client = StravaClient(db)
+        self.provider = provider or get_provider(db)
 
     def import_activities(self, athlete_id: int, max_pages: int = 10, per_page: int = 50) -> tuple[int, int]:
         imported = 0
         pages = 0
 
         for page in range(1, max_pages + 1):
-            activities = self.client.list_activities(athlete_id=athlete_id, page=page, per_page=per_page)
+            activities = self.provider.list_activities(athlete_id=athlete_id, page=page, per_page=per_page)
             if not activities:
                 break
 
@@ -42,13 +42,7 @@ class ActivityImporter:
         return imported, pages
 
     def sync_incremental(self, athlete_id: int, per_page: int = 200, overlap_seconds: int = 86400) -> tuple[int, int]:
-        """
-        Import only activities newer than the latest known activity.
-
-        The overlap window intentionally re-reads the last 24h by default.
-        This makes the sync safer if Strava receives a delayed upload or if
-        an existing activity is edited after the first import.
-        """
+        """Import only activities newer than the latest known activity."""
         sync_state = self.db.get(SyncState, 1)
         after = self._calculate_after_timestamp(sync_state=sync_state, overlap_seconds=overlap_seconds)
 
@@ -57,7 +51,7 @@ class ActivityImporter:
         page = 1
 
         while True:
-            activities = self.client.list_activities(
+            activities = self.provider.list_activities(
                 athlete_id=athlete_id,
                 page=page,
                 per_page=per_page,
@@ -94,7 +88,7 @@ class ActivityImporter:
             latest_activity = self.db.query(Activity).order_by(Activity.start_date.desc()).first()
             latest_start_date = latest_activity.start_date if latest_activity else None
 
-        latest_epoch = self._parse_strava_datetime_to_epoch(latest_start_date)
+        latest_epoch = self._parse_datetime_to_epoch(latest_start_date)
         if latest_epoch is None:
             return None
 
@@ -126,7 +120,7 @@ class ActivityImporter:
         self.db.commit()
 
     @staticmethod
-    def _parse_strava_datetime_to_epoch(value: str | None) -> int | None:
+    def _parse_datetime_to_epoch(value: str | None) -> int | None:
         if not value:
             return None
 
