@@ -5,7 +5,11 @@ from .config import settings
 from .migrations import migrate_provider_identity
 
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+connect_args = (
+    {"check_same_thread": False, "timeout": 30}
+    if settings.database_url.startswith("sqlite")
+    else {}
+)
 engine = create_engine(settings.database_url, connect_args=connect_args)
 
 # Existing pre-0.2.4 SQLite databases need provider identity columns before
