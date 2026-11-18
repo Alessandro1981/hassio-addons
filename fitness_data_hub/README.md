@@ -20,6 +20,7 @@ The architecture is being evolved so that provider-specific authentication and a
 - Athlete information
 - Weekly and monthly statistics
 - Year-to-date statistics by activity type
+- Historical annual statistics, monthly breakdown and year-over-year comparison
 - Estimated training load
 - Rule-based fitness insights
 - REST API for Home Assistant dashboards and sensors
@@ -205,7 +206,24 @@ Provider-aware persistence
 
 The application core no longer consumes Strava activity JSON directly. Provider-specific payloads are normalized at the provider boundary before entering shared importer and analytics logic.
 
+## Historical statistics (0.2.8)
+
+- `GET /stats/years`: available years with imported activities, for a Home Assistant year selector.
+- `GET /stats/year/{year}`: selected calendar year's summary and 12 monthly summaries, using the same metrics as the existing dashboard.
+- `GET /stats/years/compare`: annual summaries for all available years.
+
+All year boundaries are UTC, matching the existing API. The current year is partial (`period.complete=false`). An empty historical year returns zero totals. Existing `/stats/dashboard` and `/stats/ytd` remain unchanged. Only data already imported into the local database can appear.
+
 ## Versions
+
+### 0.2.8
+
+Adds historical annual statistics, monthly breakdowns and a multi-year comparison API without changing the existing dashboard contract.
+
+### 0.2.7
+
+Fixes SQLite migration locking by using a single database connection for schema inspection and updates, with an increased busy timeout.
+
 
 ### 0.2.6
 
