@@ -402,6 +402,61 @@ def count_activities(db: Session = Depends(get_db)):
     return {"count": db.query(Activity).count()}
 
 
+def available_activity_years(db: Session) -> list[int]:
+    """Years present in stored activities, newest first."""
+    return sorted(
+        {parsed.year for row in db.query(Activity.start_date).all()
+         if (parsed := parse_activity_datetime(row.start_date)) is not None},
+        reverse=True,
+    )
+
+
+@app.get("/stats/years")
+def stats_available_years(db: Session = Depends(get_db)):
+    """List years with imported activities for dashboard selectors."""
+    return {"years": available_activity_years(db)}
+
+
+@app.get("/stats/year/{year}")
+def stats_by_year(year: int, db: Session = Depends(get_db)):
+    """Full calendar-year statistics and monthly breakdown (UTC)."""
+    current_year = datetime.now(timezone.utc).year
+    if year < 1970 or year > current_year:
+        raise HTTPException(status_code=422, detail="Year must be between 1970 and the current year")
+
+    start = datetime(year, 1, 1, tzinfo=timezone.utc)
+    end = datetime(year + 1, 1, 1, tzinfo=timezone.utc)
+    activities = load_activities_between(db, start, end)
+    months = []
+    for month in range(1, 13):
+        month_activities = [
+            activity for activity in activities
+            if (parsed := parse_activity_datetime(activity.start_date)) is not None
+            and parsed.month == month
+        ]
+        months.append({"month": f"{year}-{month:02d}", **summarize_activities(month_activities)})
+
+    return {
+        "year": year,
+        "period": {"from": start.isoformat(), "to": end.isoformat(), "complete": year < current_year},
+        "summary": summarize_activities(activities),
+        "months": months,
+    }
+
+
+@app.get("/stats/years/compare")
+def stats_compare_years(db: Session = Depends(get_db)):
+    """Annual totals for all available years, newest first."""
+    years = available_activity_years(db)
+    return {"years": [
+        {"year": year, **summarize_activities(load_activities_between(
+            db, datetime(year, 1, 1, tzinfo=timezone.utc),
+            datetime(year + 1, 1, 1, tzinfo=timezone.utc),
+        ))}
+        for year in years
+    ]}
+
+
 @app.get("/stats/ytd")
 def stats_year_to_date(db: Session = Depends(get_db)):
     now = datetime.now(timezone.utc)
